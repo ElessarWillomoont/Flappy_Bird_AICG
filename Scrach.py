@@ -45,6 +45,8 @@ for i in range(0,10):
     tex = pr.load_texture(f"source/UI/Numbers/{i}.png")
     number_textures.append(tex)
 
+# print(f"size is :{number_textures[0].width}")
+
 #define the zoom size of each elements
 
 bird_size = 1.0
@@ -53,11 +55,15 @@ pip_size = 1.0
 UI_size = 1.0
 number_size = 1.0
 
-background_size_w = 1.0
-background_size_h = 1.0
+# background_size_w = 1.0
+# background_size_h = 1.0
 
-base_size_w = 1.0
-base_size_h = 1.0
+# base_size_w = 1.0
+# base_size_h = 1.0
+
+background_size = 1.0
+
+base_size = 1.0
 
 #define the class of bird and pip
 #bird class
@@ -122,8 +128,39 @@ def renew_score_digit (score):
     while len(score_digit) < 4:
         score_digit.insert(0, 0)
 
-def draw_the_UI (texture, point):
-    pass
+def draw_the_UI (texture, point_x, point_y, multiper):
+    point = pr.Vector2(point_x, point_y)
+    pr.draw_texture_ex(texture, point, 0, multiper, pr.WHITE)
+
+def fb_initialization ():
+    global game_status, pips, temp_to_delete, score, score_real, score_prev, score_digit, fram_control
+    game_status = WAITING
+    pips = []
+    temp_to_delete = []
+
+    score = 0 #current score
+    score_real = 0 #there are two pips...
+    score_prev = 0 #score before
+    score_digit = []#digit of score
+
+    fram_control = 0 #to control the bird animation
+
+def draw_the_score ():
+    global SCREEN_HEIGHT, SCREEN_WIDTH, score_digit, number_textures, number_size
+    gap = int(number_textures[0].width * number_size / 5 )
+    length_of_digits = int(number_textures[0].width * number_size * 4 + gap * 3)
+    start_point_x = int(SCREEN_WIDTH / 2 - length_of_digits / 2)
+    start_point_y = int(SCREEN_HEIGHT / 10)
+    for index, i in enumerate(score_digit):
+        draw_the_UI(number_textures[i], int(start_point_x + index * (number_textures[0].width * number_size + gap)), start_point_y, number_size)
+
+def draw_the_background():
+    global SCREEN_HEIGHT, SCREEN_WIDTH,  image_Background, background_size
+    draw_the_UI(image_Background, int(SCREEN_WIDTH/2 - image_Background.width * background_size / 2), int(SCREEN_HEIGHT/2 - image_Background.height * background_size / 2) ,background_size)
+    # draw the background in the center
+def draw_the_ground():
+    global SCREEN_HEIGHT, SCREEN_WIDTH,  image_Base, base_size
+    draw_the_UI(image_Background, int(SCREEN_WIDTH/2 - image_Background.width * background_size / 2), int(SCREEN_HEIGHT * 0.8) ,background_size)
 
 bird_play = MyBird(int(SCREEN_HEIGHT/ 2))
 
@@ -142,7 +179,9 @@ pr.set_target_fps(60)
 
 while not pr.window_should_close():
     if game_status == WAITING:
-        pass
+        draw_the_UI(image_Beging, int(SCREEN_WIDTH/2 - image_Beging.width * UI_size / 2), int(SCREEN_HEIGHT/2 - image_Beging.height * UI_size / 2), UI_size)
+        if pr.is_key_pressed(pr.KEY_SPACE):
+            game_status = RUNING
     if game_status == RUNING:
         #Game Logic
         if len(pips) <= 8:
@@ -160,6 +199,8 @@ while not pr.window_should_close():
                 score_real = score_real + 1
             if pip_i.PositionX <= 0:
                 temp_to_delete.append(index)
+        if (bird_play.positionY >= int(SCREEN_HEIGHT * 0.8)) or (bird_play.positionY <= 0):
+            game_status = FAILED
         for i in temp_to_delete:
             del pips[i]
         temp_to_delete = []
@@ -171,9 +212,12 @@ while not pr.window_should_close():
             fram_control = 0
         else:
             fram_control = fram_control + 1
-
-        if game_status == FAILED:
-            pass
+        draw_the_score()
+    if game_status == FAILED:
+        draw_the_score()
+        draw_the_UI(image_Over, int(SCREEN_WIDTH/2 - image_Over.width * UI_size / 2), int(SCREEN_HEIGHT/2 - image_Over.height * UI_size / 2), UI_size)
+        if pr.is_key_pressed(pr.KEY_SPACE):
+            fb_initialization()
 
 
 

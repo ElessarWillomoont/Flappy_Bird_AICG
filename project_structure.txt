@@ -1,0 +1,2769 @@
+--- Project File Tree ---
+[.]
+  assets.py
+  comps.py
+  requirements.txt
+  Scrach.py
+  Scrach_failed_resize.py
+  [assets]
+    [objects]
+    [sounds]
+    [ui]
+      [numbers]
+  [source]
+    [Game_Objects]
+    [Sound_Efects]
+      die.ogg
+      hit.ogg
+      point.ogg
+      swoosh.ogg
+      wing.ogg
+    [UI]
+      [Numbers]
+
+--- Project File Tree with Content ---
+[.]
+  assets.py
+    --- File Content ---
+    from __future__ import annotations
+    
+    from itertools import chain
+    from pathlib import Path
+    from typing import Any
+    
+    import pyray as ray
+    
+    
+    class AttrDict(dict):
+        def __init__(self, *args, **kwargs):
+            super(AttrDict, self).__init__(*args, **kwargs)
+            self.__dict__ = self
+    
+    
+    Assets = AttrDict()
+    
+    
+    def load(dir: Path) -> None:
+        for path in chain(dir.glob("**/*.wav"), dir.glob("**/*.png")):
+            keys = path.as_posix().replace(path.suffix, "").split("/")[1:]
+            current = Assets
+            while len(keys) and (key := keys.pop(0)):
+                if not len(keys):
+                    match path.suffix:
+                        case ".wav": current[key.replace("-", "_")] = ray.load_sound(path.as_posix())
+                        case ".png": current[key.replace("-", "_")] = ray.load_texture(path.as_posix())
+                    continue
+                current[key] = current.get(key, AttrDict())
+                current = current[key]
+    
+    
+    def unload(store: dict[str, Any] = Assets) -> None:
+        for value in store.values():
+            if isinstance(value, dict):
+                unload(value)
+                continue
+            match value.__class__.__name__:
+                case "Sound": ray.unload_sound(value)
+                case "Texture": ray.unload_texture(value)
+    --- End of File ---
+  comps.py
+    --- File Content ---
+    from __future__ import annotations
+    
+    from assets import Assets
+    from pathlib import Path
+    
+    import assets
+    import pyray as ray
+    import random
+    
+    
+    TITLE = "Flappy Bird"
+    WIDTH = 288
+    HEIGHT = 512
+    FPS = 60
+    
+    MUL = 200
+    JUMP = MUL
+    GRAVITY = 2 * MUL
+    BG = 20
+    GR = 80
+    
+    
+    class Component:
+        def __init__(self, entity: Entity | None = None) -> None:
+            self.entity = entity
+    
+        def update(self, dt: float) -> None: ...
+        def draw(self) -> None: ...
+    
+    
+    class Entity:
+        counter = 0
+    
+        def __init__(self) -> None:
+            self.comps: dict[str, Component] = {}
+            self.id = Entity.counter
+            Entity.counter += 1
+    
+        def remove_component(self, name: str) -> None: del self.comps[name]
+        def add_component(self, name: str, comp: Component) -> Component:
+            comp.entity = self
+            self.comps[name] = comp
+            return self.comps[name]
+    
+        def update(self, dt: float) -> None: [comp.update(dt) for comp in self.comps.values()]
+        def draw(self) -> None: [comp.draw() for comp in self.comps.values()]
+    
+    
+    class Scene:
+        def __init__(self, *entities: Entity) -> None:
+            self.ents = entities
+    
+        def update(self, dt: float) -> None: [ent.update(dt) for ent in self.ents]
+        def draw(self) -> None: [ent.draw() for ent in self.ents]
+    
+    
+    class Sprite(Component):
+        def __init__(self, tex: ray.Texture, anchor: ray.Vector2 | None = None, tint: ray.Color = ray.WHITE) -> None:
+            super().__init__()
+            self.tex = tex
+            self.anchor = anchor if anchor is None else ray.Vector2(0, 0)
+            self.width = tex.width
+            self.height = tex.height
+            self.tint = tint
+    
+    
+    class Transform(Component):
+        def __init__(self, pos: ray.Vector2 | None = None) -> None:
+            super().__init__()
+            self.pos = ray.Vector2(0, 0) if pos is None else pos
+    
+    
+    class Renderer(Component):
+        def __init__(self, transform: Transform, sprite: Sprite) -> None:
+            super().__init__()
+            self.transform = transform
+            self.sprite = sprite
+            self.debug = False
+    
+        def update(self, dt: float) -> None:
+            if ray.is_key_pressed(ray.KEY_D):
+                self.debug = not self.debug
+    
+        def draw(self) -> None:
+            pos = ray.vector2_add(self.transform.pos, self.sprite.anchor)
+            ray.draw_texture(self.sprite.tex, int(pos.x), int(pos.y), self.sprite.tint)
+            if self.debug:
+                rec = ray.Rectangle(pos.x, pos.y, self.sprite.width, self.sprite.height)
+                ray.draw_rectangle_lines_ex(rec, 2, ray.GREEN)
+                ray.draw_rectangle(int(self.transform.pos.x - 8), int(self.transform.pos.y - 1), 16, 2, ray.BLUE)
+                ray.draw_rectangle(int(self.transform.pos.x - 1), int(self.transform.pos.y - 8), 2, 16, ray.BLUE)
+    
+    
+    class HorizontalRepeat(Component):
+        def __init__(self, ents: tuple[Entity, Entity]) -> None:
+            super().__init__()
+            self.ents = ents
+    
+            self.tr_0, self.tr_1 = self.ents[0].comps["tr"], self.ents[1].comps["tr"]
+            self.sp_0, self.sp_1 = self.ents[0].comps["sp"], self.ents[1].comps["sp"]
+    
+            self.tr_1.pos.x += self.sp_0.width
+    
+        def update(self, dt: float) -> None:
+            if self.tr_0.pos.x <= -self.sp_0.width: self.tr_0.pos.x = self.tr_1.pos.x + self.sp_1.width
+            if self.tr_1.pos.x <= -self.sp_1.width: self.tr_1.pos.x = self.tr_0.pos.x + self.sp_0.width
+    
+    
+    class RigidBody(Component):
+        def __init__(self, transform: Transform, vel: ray.Vector2 | None = None, kinetic: bool = False, impulse: ray.Vector2 | None = None) -> None:
+            super().__init__()
+            self.transform = transform
+            self.vel = ray.Vector2(0, 0) if vel is None else vel
+            self.kinetic = kinetic
+            self.impulse = impulse
+    
+        def update(self, dt: float) -> None:
+            if self.kinetic: self.vel.y += GRAVITY * dt
+            if self.impulse is not None:
+                self.vel = self.impulse
+                self.impulse = None
+            self.transform.pos = ray.vector2_add(self.transform.pos, ray.vector2_scale(self.vel, dt))
+    
+    
+    class Pipe(Component):
+        def __init__(self, pipes: tuple[Entity, Entity], ground_h: float, gap: float, transform: Transform) -> None:
+            super().__init__()
+            self.pipes = pipes
+            self.ground_h = ground_h
+            self.gap = gap
+            self.transform = transform
+    
+            self.pipe_b_tr, self.pipe_t_tr = self.pipes[0].comps["tr"], self.pipes[1].comps["tr"]
+            self.pipe_sp = self.pipes[0].comps["sp"]
+    
+        def update(self, dt: float) -> None:
+            if self.transform.pos.x <= -0.5 * self.pipe_sp.width:
+                rand = 0.25 + 0.5 * random.random()
+                self.transform.pos.x = WIDTH + 0.5 * self.pipe_sp.width
+                self.transform.pos.y = (1 - rand) * (HEIGHT - self.ground_h)
+                self.entity.comps["pt"].passed = False
+    
+            self.pipe_b_tr.pos.x = self.transform.pos.x
+            self.pipe_t_tr.pos.x = self.transform.pos.x
+            self.pipe_b_tr.pos.y = self.transform.pos.y + 0.5 * self.gap
+            self.pipe_t_tr.pos.y = self.transform.pos.y - 0.5 * self.gap
+    
+    
+    class Points(Component):
+        def __init__(self, pi_tr: Pipe, pi_w: int, fl: Entity) -> None:
+            super().__init__()
+            self.pi_tr = pi_tr
+            self.pi_w = pi_w
+            self.fl = fl
+    
+            self.passed = False
+            self.points = 0
+    
+            self.fl_tr = fl.comps["tr"]
+            self.fl_sp = fl.comps["sp"]
+    
+        def update(self, dt: float) -> None:
+            if not self.passed and self.fl_tr.pos.x + 0.5 * self.fl_sp.width >= self.pi_tr.pos.x + 0.5 * self.pi_w:
+                self.points += 1
+                self.passed = True
+                ray.play_sound(Assets.sounds.swoosh)
+                ray.play_sound(Assets.sounds.point)
+    
+    
+    class Controller(Component):
+        def __init__(self, tr: Transform, rb: RigidBody, sp: Sprite, pi: Pipe, gr_tr: Transform, go_sp: Sprite) -> None:
+            super().__init__()
+            self.tr = tr
+            self.rb = rb
+            self.sp = sp
+            self.pi = pi
+            self.gr_tr = gr_tr
+            self.go_sp = go_sp
+    
+            self.dead = False
+            self.dead_since = 0
+    
+        def update(self, dt: float) -> None:
+            if self.dead:
+                self.dead_since += dt
+                return
+    
+            pi_h_hit = self.tr.pos.y + 0.4 * self.sp.width >= self.pi.pipe_b_tr.pos.y or self.tr.pos.y - 0.4 * self.sp.width <= self.pi.pipe_t_tr.pos.y
+            pi_w_hit = self.tr.pos.x - 0.4 * self.sp.width <= self.pi.pipe_b_tr.pos.x + 0.5 * self.pi.pipe_sp.width and self.tr.pos.x + 0.4 * self.sp.width >= self.pi.pipe_b_tr.pos.x - 0.5 * self.pi.pipe_sp.width
+            gr_h_hit = self.tr.pos.y + 0.4 * self.sp.width >= self.gr_tr.pos.y
+    
+            self.dead = gr_h_hit or (pi_h_hit and pi_w_hit)
+            if self.dead:
+                self.sp.tex = Assets.objects.yellowbird_downflap
+                self.sp.tint = ray.RED
+                self.rb.vel = ray.Vector2(-GR, 0)
+                self.rb.kinetic = False
+                self.go_sp.tint = ray.WHITE
+                ray.play_sound(Assets.sounds.die)
+    
+            jump = ray.is_key_pressed(ray.KEY_SPACE)
+            if jump:
+                self.rb.impulse = ray.Vector2(0, -JUMP)
+                ray.play_sound(Assets.sounds.wing)
+    
+            if self.rb.vel.y < 0: self.sp.tex = Assets.objects.yellowbird_downflap
+            if self.rb.vel.y > 0: self.sp.tex = Assets.objects.yellowbird_upflap
+            if self.rb.vel.y == 0 or jump: self.sp.tex = Assets.objects.yellowbird_midflap
+    
+    
+    class SceneGame(Scene):
+        def __init__(self):
+            super().__init__()
+    
+            bg = Entity()
+            bg_tiles = []
+            for i in range(2):
+                tile = Entity()
+                sp = tile.add_component("sp", Sprite(Assets.objects.background_day))
+                tr = tile.add_component("tr", Transform())
+                tile.add_component("re", Renderer(tr, sp))
+                tile.add_component("rb", RigidBody(tr, ray.Vector2(-BG, 0)))
+                bg_tiles.append(tile)
+            bg.add_component("hr", HorizontalRepeat(tuple(bg_tiles)))
+    
+            gr = Entity()
+            gr_tiles = []
+            for i in range(2):
+                tile = Entity()
+                sp = tile.add_component("sp", Sprite(Assets.objects.base))
+                tr = tile.add_component("tr", Transform(ray.Vector2(0, HEIGHT - sp.height)))
+                tile.add_component("re", Renderer(tr, sp))
+                tile.add_component("rb", RigidBody(tr, ray.Vector2(-GR, 0)))
+                gr_tiles.append(tile)
+            gr.add_component("hr", HorizontalRepeat(tuple(gr_tiles)))
+    
+            fl = Entity()
+            tex = Assets.objects.yellowbird_midflap
+            sp = fl.add_component("sp", Sprite(tex, ray.Vector2(-0.5 * tex.width, -0.5 * tex.height)))
+            tr = fl.add_component("tr", Transform(ray.Vector2(0.5 * WIDTH, (1 - 0.5) * (HEIGHT - gr_tiles[0].comps["sp"].height) + 0.5 * sp.height)))
+            rb = fl.add_component("rb", RigidBody(tr, kinetic=True, impulse=ray.Vector2(0, -JUMP)))
+            fl.add_component("re", Renderer(tr, sp))
+    
+            pi_b = Entity()
+            tex = Assets.objects.pipe_b_green
+            sp = pi_b.add_component("sp", Sprite(tex, ray.Vector2(-0.5 * tex.width, 0)))
+            tr = pi_b.add_component("tr", Transform())
+            pi_b.add_component("re", Renderer(tr, sp))
+    
+            pi_t = Entity()
+            tex = Assets.objects.pipe_t_green
+            sp = pi_t.add_component("sp", Sprite(tex, ray.Vector2(-0.5 * tex.width, -tex.height)))
+            tr = pi_t.add_component("tr", Transform())
+            pi_t.add_component("re", Renderer(tr, sp))
+    
+            pi = Entity()
+            tr = pi.add_component("tr", Transform(ray.Vector2(WIDTH + 0.5 * Assets.objects.pipe_b_green.width, (1 - 0.5) * (HEIGHT - gr_tiles[0].comps["sp"].height))))
+            pi.add_component("rb", RigidBody(tr, ray.Vector2(-GR, 0)))
+            pi.add_component("pi", Pipe((pi_b, pi_t), gr_tiles[0].comps["sp"].height, 4 * fl.comps["sp"].height, tr))
+            pi.add_component("pt", Points(tr, pi_b.comps["sp"].width, fl))
+    
+            go = Entity()
+            tex = Assets.ui.gameover
+            sp = go.add_component("sp", Sprite(tex, ray.Vector2(-0.5 * tex.width, -0.5 * tex.height), ray.Color(0, 0, 0, 0)))
+            tr = go.add_component("tr", Transform(ray.Vector2(0.5 * WIDTH, (1 - 0.5) * (HEIGHT - gr_tiles[0].comps["sp"].height))))
+            go.add_component("re", Renderer(tr, sp))
+    
+            fl.add_component("co", Controller(
+                fl.comps["tr"],
+                fl.comps["rb"],
+                fl.comps["sp"],
+                pi.comps["pi"],
+                gr_tiles[0].comps["tr"],
+                go.comps["sp"],
+            ))
+    
+            super().__init__(*bg_tiles, bg, go, pi, pi_b, pi_t, *gr_tiles, gr, fl)
+    
+    
+    class SceneMenu(Scene):
+        def __init__(self):
+            super().__init__()
+    
+            bg = Entity()
+            sp = bg.add_component("sp", Sprite(Assets.objects.background_day))
+            tr = bg.add_component("tr", Transform())
+            bg.add_component("re", Renderer(tr, sp))
+    
+            gr = Entity()
+            sp = gr.add_component("sp", Sprite(Assets.objects.base))
+            tr = gr.add_component("tr", Transform(ray.Vector2(0, HEIGHT - sp.height)))
+            gr.add_component("re", Renderer(tr, sp))
+    
+            ms = Entity()
+            tex = Assets.ui.message
+            sp = ms.add_component("sp", Sprite(tex, ray.Vector2(-0.5 * tex.width, -0.5 * tex.height)))
+            tr = ms.add_component("tr", Transform(ray.Vector2(0.5 * WIDTH, (1 - 0.5) * (HEIGHT - gr.comps["sp"].height))))
+            ms.add_component("re", Renderer(tr, sp))
+    
+            super().__init__(bg, gr, ms)
+    
+    
+    class SceneManager:
+        def __init__(self) -> None:
+            super().__init__()
+            self.scene = SceneMenu()
+            self.playing = False
+            self.debug = False
+            self.co: Controller | None = None
+    
+        def update(self, dt: float) -> None:
+            self.scene.update(dt)
+            if ray.is_key_pressed(ray.KEY_D):
+                self.debug = not self.debug
+    
+            if not self.playing and ray.is_key_pressed(ray.KEY_SPACE):
+                self.scene = SceneGame()
+                self.playing = True
+                self.co = next(filter(lambda co: co, (e.comps.get("co", None) for e in self.scene.ents)))
+    
+            if self.playing and self.co:
+                if self.co.dead_since > 5:
+                    self.co = None
+                    self.playing = False
+                    self.scene = SceneMenu()
+    
+        def draw(self) -> None:
+            self.scene.draw()
+            if self.debug:
+                ray.draw_text(f"MS: {int(ray.get_frame_time() * 1_000)}", 20, 20, 20, ray.WHITE)
+                ray.draw_text(f"FPS: {ray.get_fps()}", 20, 45, 20, ray.WHITE)
+    
+    
+    # def obj_points(points: int) -> list[Object]:
+    #     objs = []
+    #     sprites = [n_sprites[int(c)] for c in f"{points}"]
+    #     offset = 0.5 * WIDTH - 0.5 * sum(map(lambda s: s.width, sprites))
+    #     for i, sprite in enumerate(sprites):
+    #         transform = Transform(ray.Vector2(offset + i * sprite.width, 0.1 * HEIGHT))
+    #         objs.append(Object(sprite, transform))
+    #     return objs
+    
+    ray.set_target_fps(FPS)
+    ray.init_window(WIDTH, HEIGHT, TITLE)
+    ray.init_audio_device()
+    assets.load(Path("./assets"))
+    
+    # n_textures = [Assets.ui.numbers[f"{i}"] for i in range(10)]
+    # n_sprites = [Sprite(n_texture, ray.Vector2(-0.5 * n_texture.width, -0.5 * n_texture.height)) for n_texture in n_textures]
+    
+    scene = SceneManager()
+    while not ray.window_should_close():
+        dt = ray.get_frame_time()
+    
+        scene.update(dt)
+        ray.begin_drawing()
+        ray.clear_background(ray.BLACK)
+        scene.draw()
+        ray.end_drawing()
+    
+    assets.unload()
+    ray.close_audio_device()
+    ray.close_window()
+    --- End of File ---
+  requirements.txt
+    --- File Content ---
+    c f f i = = 1 . 1 7 . 1 
+     
+     p y c p a r s e r = = 2 . 2 2 
+     
+     r a y l i b = = 5 . 5 . 0 . 0 
+     
+     s e t u p t o o l s = = 7 5 . 6 . 0 
+     
+     
+    --- End of File ---
+  Scrach.py
+    --- File Content ---
+    import pyray as pr
+    import random
+    
+    SCREEN_WIDTH = 1920
+    SCREEN_HEIGHT = 1080
+    
+    PIP_POS_UP = 0
+    PIP_POS_DOWN = 1
+    
+    SPEED_X = 5 #speed of pip move
+    GRAVITY = 5 #speed of bird decreace
+    FORCE = 3 #speed of bird decreace
+    
+    #for game status
+    
+    RUNING = 0
+    WAITING = 1
+    FAILED = 2
+    
+    BIRD_SIZE = 30
+    
+    
+    
+    # set configurations to MSAA and full screen
+    # pr.set_config_flags(pr.ConfigFlags.FLAG_MSAA_4X_HINT | pr.ConfigFlags.FLAG_FULLSCREEN_MODE)
+    
+    # init the window, but will be changed latter
+    pr.init_window(SCREEN_WIDTH, SCREEN_HEIGHT, 'flappy bird')
+    
+    # load the resources
+    
+    
+    image_Background = pr.load_texture("source/Game_Objects/background-day.png")
+    image_Base = pr.load_texture("source/Game_Objects/base.png")
+    image_Pip = pr.load_texture("source/Game_Objects/pip-green.png")
+    
+    bird_Fram_1 = pr.load_texture("source/Game_Objects/yellowbird-upflap.png")
+    bird_Fram_2 = pr.load_texture("source/Game_Objects/yellowbird-midflap.png")
+    bird_Fram_3 = pr.load_texture("source/Game_Objects/yellowbird-downflap.png")
+    
+    image_Beging = pr.load_texture("source/UI/message.png")
+    image_Over = pr.load_texture("source/UI/gameover.png")
+    number_textures = []
+    for i in range(0,10):
+        tex = pr.load_texture(f"source/UI/Numbers/{i}.png")
+        number_textures.append(tex)
+    
+    #define the zoom size of each elements
+    
+    bird_size = 1.0
+    pip_size = 1.0
+    
+    UI_size = 1.0
+    number_size = 1.0
+    
+    background_size_w = 1.0
+    background_size_h = 1.0
+    
+    base_size_w = 1.0
+    base_size_h = 1.0
+    
+    #define the class of bird and pip
+    #bird class
+    class MyBird:
+        def __init__(self, positionY):
+            self.positionY = positionY
+    
+    #pip class
+    class MyPip:
+        def __init__(self, PositionX, HeadPositionY, Direction):
+            self.HeadPositionY = HeadPositionY
+            self.PositionX = PositionX
+            self.Direction = Direction
+    
+    def hit_the_pip (bird_obj, pip_obj):
+        global game_status
+        if pip_obj.Direction == PIP_POS_UP: #upper pip
+            if bird_obj.positionY < pip_obj.HeadPositionY:
+                game_status = FAILED
+        elif pip_obj.Direction == PIP_POS_DOWN: #lower pip
+            if bird_obj.positionY > pip_obj.HeadPositionY:
+                game_status = FAILED
+    
+    def draw_the_bird (PositionY, FrameControl):
+        global bird_Fram_1, bird_Fram_2, bird_Fram_3, bird_size
+        target_point = pr.Vector2(int(SCREEN_WIDTH /2 - bird_Fram_1.width / 2 * bird_size), int(PositionY - (bird_Fram_1.height/2 * bird_size)))
+        if int(FrameControl/ 20) == 0:
+            pr.draw_texture_ex(bird_Fram_1, target_point, 0.0,  bird_size, pr.WHITE)
+        elif int(FrameControl/ 20) == 1:
+            pr.draw_texture_ex(bird_Fram_2, target_point, 0.0,  bird_size, pr.WHITE)
+        elif int(FrameControl/ 20) == 2:
+            pr.draw_texture_ex(bird_Fram_3, target_point, 0.0,  bird_size, pr.WHITE)
+    
+    def draw_the_pip (pip :MyPip):
+        global image_Pip, pip_size
+        if pip.Direction == PIP_POS_UP:
+            target_point = pr.Vector2(int(pip.PositionX - image_Pip.width /2 * pip_size),int(image_Pip.height * pip_size - pip.HeadPositionY))
+            pr.draw_texture_ex(image_Pip, target_point, 180.0, pip_size, pr.WHITE)
+        if pip.Direction == PIP_POS_DOWN:
+            target_point = pr.Vector2(int(pip.PositionX - image_Pip.width /2 * pip_size),int(SCREEN_HEIGHT - image_Pip.height * pip_size + pip.HeadPositionY))
+            pr.draw_texture_ex(image_Pip, target_point, 0, pip_size, pr.WHITE)
+    
+    def make_new_pip (pips: list):
+        distance_closest = SCREEN_WIDTH
+        for i in pips:
+            if i.PositionX < distance_closest:
+                distance_closest = i.PositionX
+        if len(pips) == 0 or distance_closest >= int(SCREEN_WIDTH/5):
+            pos = random.randint(int(SCREEN_HEIGHT * 0.2), int(SCREEN_HEIGHT * 0.8))
+            gap = random.randint(BIRD_SIZE, int(SCREEN_HEIGHT * 0.5))
+            new_pip_upper = MyPip(SCREEN_WIDTH, int(pos - (gap / 2)), PIP_POS_UP)
+            new_pip_lower = MyPip(SCREEN_WIDTH, int(pos + (gap / 2)), PIP_POS_UP)
+            pips.append(new_pip_upper)
+            pips.append(new_pip_lower)
+    
+    def renew_score_digit (score):
+        global score_digit
+        score_digit = []
+        score_str = str(score)
+        for i in score_str:
+            score_digit.append(int(i))
+        while len(score_digit) < 4:
+            score_digit.insert(0, 0)
+    
+    def draw_the_UI (texture, point):
+        pass
+    
+    bird_play = MyBird(int(SCREEN_HEIGHT/ 2))
+    
+    game_status = WAITING
+    pips = []
+    temp_to_delete = []
+    
+    score = 0 #current score
+    score_real = 0 #there are two pips...
+    score_prev = 0 #score before
+    score_digit = []#digit of score
+    
+    fram_control = 0 #to control the bird animation
+    
+    pr.set_target_fps(60)
+    
+    while not pr.window_should_close():
+        if game_status == WAITING:
+            pass
+        if game_status == RUNING:
+            #Game Logic
+            if len(pips) <= 8:
+                make_new_pip (pips)
+            if pr.is_key_pressed(pr.KEY_SPACE): #don't know whether the key value is good
+                bird_play.positionY = bird_play.positionY - FORCE
+            else:
+                bird_play.positionY = bird_play.positionY + GRAVITY
+            draw_the_bird(bird_play.positionY, fram_control)
+            for index, pip_i in enumerate(pips):
+                pip_i.PositionX = pip_i.PositionX - SPEED_X
+                draw_the_pip (pip_i)
+                if pip_i.PositionX == int( SCREEN_WIDTH / 2): #pip overlap with bird
+                    hit_the_pip(bird_play, pip_i)
+                    score_real = score_real + 1
+                if pip_i.PositionX <= 0:
+                    temp_to_delete.append(index)
+            for i in temp_to_delete:
+                del pips[i]
+            temp_to_delete = []
+            score = int(score_real /2)
+            if score != score_prev:
+                renew_score_digit(score)
+                score_prev = score
+            if fram_control == 60:
+                fram_control = 0
+            else:
+                fram_control = fram_control + 1
+    
+            if game_status == FAILED:
+                pass
+    
+    
+    
+    #     UpdatePhysics()  # Update physics system
+    
+    #     if IsKeyPressed(KEY_R):  # Reset physics system
+    #         ResetPhysics()
+    
+    #         floor = CreatePhysicsBodyRectangle((SCREEN_WIDTH/2, SCREEN_HEIGHT), 500, 100, 10)
+    #         floor.enabled = False
+    
+    #         circle = CreatePhysicsBodyCircle((SCREEN_WIDTH/2, SCREEN_HEIGHT/2), 45, 10)
+    #         circle.enabled = False
+    
+    #     # Physics body creation inputs
+    #     if IsMouseButtonPressed(MOUSE_BUTTON_LEFT):
+    #         CreatePhysicsBodyPolygon(GetMousePosition(), GetRandomValue(20, 80), GetRandomValue(3, 8), 10)
+    #     elif IsMouseButtonPressed(MOUSE_BUTTON_RIGHT):
+    #         CreatePhysicsBodyCircle(GetMousePosition(), GetRandomValue(10, 45), 10)
+    
+    #     # Destroy falling physics bodies
+    #     bodies_count = GetPhysicsBodiesCount()
+    #     for i in reversed(range(bodies_count)):
+    #         body = GetPhysicsBody(i)
+    
+    #         if body and body.position.y > SCREEN_HEIGHT * 2:
+    #             DestroyPhysicsBody(body)
+    #     # ----------------------------------------------------------------------
+    
+    #     # Draw
+    #     # ----------------------------------------------------------------------
+    #     BeginDrawing()
+    
+    #     ClearBackground(BLACK)
+    #     DrawFPS(SCREEN_WIDTH - 90, SCREEN_HEIGHT - 30)
+    
+    #     # Draw created physics bodies
+    #     bodies_count = GetPhysicsBodiesCount()
+    #     for i in range(bodies_count):
+    #         body = GetPhysicsBody(i)
+    
+    #         if body:
+    #             vertex_count = GetPhysicsShapeVerticesCount(i)
+    #             for j in range(vertex_count):
+    #                 # Get physics bodies shape vertices to draw lines
+    #                 # Note: GetPhysicsShapeVertex() already calculates rotation transformations
+    #                 vertexA = GetPhysicsShapeVertex(body, j)
+    
+    #                 # Get next vertex or first to close the shape
+    #                 jj = (j + 1) if (j+1) < vertex_count else 0
+    #                 vertexB = GetPhysicsShapeVertex(body, jj)
+    
+    #                 # Draw a line between two vertex positions
+    #                 DrawLineV(vertexA, vertexB, GREEN)
+    
+    #     pr.draw_text(b'Left mouse button to create a polygon', 10, 10, 10, WHITE)
+    #     pr.draw_text(b'Right mouse button to create a circle', 10, 25, 10, WHITE)
+    #     pr.draw_text("Press 'R' to reset example", 10, 40, 10, WHITE)
+    
+    #     pr.end_drawing()
+    #     # ----------------------------------------------------------------------
+    
+    # ClosePhysics()
+    # CloseWindow()
+    
+    pr.unload_texture(image_Background)
+    pr.unload_texture(image_Base)
+    pr.unload_texture(image_Pip)
+    
+    pr.unload_texture(bird_Fram_1)
+    pr.unload_texture(bird_Fram_2)
+    pr.unload_texture(bird_Fram_3)
+    
+    pr.unload_texture(image_Beging)
+    pr.unload_texture(image_Over)
+    --- End of File ---
+  Scrach_failed_resize.py
+    --- File Content ---
+    import pyray as pr
+    
+    SCREEN_WIDTH = 1920
+    SCREEN_HEIGHT = 1080
+    
+    
+    # set configurations to MSAA and full screen
+    # pr.set_config_flags(pr.ConfigFlags.FLAG_MSAA_4X_HINT | pr.ConfigFlags.FLAG_FULLSCREEN_MODE)
+    
+    # init the window, but will be changed latter
+    pr.init_window(SCREEN_WIDTH, SCREEN_HEIGHT, 'flappy bird')
+    
+    # load the resources
+    
+    
+    image_Background = pr.load_texture("source/Game_Objects/background-day.png")
+    print(f"type of image background is {type(image_Background)}")
+    image_Base = pr.load_texture("source/Game_Objects/base.png")
+    image_Pip = pr.load_texture("source/Game_Objects/pip-green.png")
+    
+    bird_Fram_1 = pr.load_texture("source/Game_Objects/yellowbird-upflap.png")
+    bird_Fram_2 = pr.load_texture("source/Game_Objects/yellowbird-midflap.png")
+    bird_Fram_3 = pr.load_texture("source/Game_Objects/yellowbird-downflap.png")
+    
+    image_Beging = pr.load_texture("source/UI/message.png")
+    image_Over = pr.load_texture("source/UI/gameover.png")
+    number_textures = []
+    for i in range(0,10):
+        tex = pr.load_texture(f"source/UI/Numbers/{i}.png")
+        number_textures.append(tex)
+    
+    #define the zoom size of each elements
+    
+    bird_size = 1.0
+    pip_size = 1.0
+    
+    UI_size = 1.0
+    number_size = 1.0
+    
+    background_size_w = 1.0
+    background_size_h = 1.0
+    
+    base_size_w = 1.0
+    base_size_h = 1.0
+    
+    # parameter to store the previous window size, check whether the window size is changed
+    
+    window_size_pre_w = 1920
+    window_size_pre_h = 1080
+    
+    # a function to renew the zoom scale for each elements when window size changed
+    
+    def calculate_zoom_ratio (window_size_w, window_size_h):
+        global bird_size, pip_size, UI_size, background_size_w, background_size_h, base_size_w, base_size_h, number_size
+        global image_Background, image_Base, image_Pip, image_Beging, number_textures, bird_Fram_1 #assume that every bird and number texture are same sized
+        
+        over_all_size = min(window_size_h, window_size_w)
+        print("good at overall size")
+    
+        bird_size = 0,1 * over_all_size / min(bird_Fram_1.height, pr.get_texture_)
+        pip_size = 0.1 * window_size_w/ image_Pip.width
+        print("good at bird/pip size")
+    
+        UI_size = 0.5 * window_size_h/ image_Beging.height
+        print("good at ui size")
+        number_size = 0.1 * window_size_h/ number_textures[0].height
+        print("good at number size")
+    
+    # for i in range(0, 10):
+    #     tex = pr.load_texture(f"source/UI/Numbers/{i}.png")
+    #     if not tex:  # 检查是否加载成功
+    #         print(f"Failed to load texture for number {i}")
+    #     else:
+    #         print(f"load texture for number {i}")
+    #         number_textures.append(tex)
+    # for tex in number_textures:
+    #     print(type(tex))
+    
+    try:
+        calculate_zoom_ratio (1920, 1080)
+    except:
+        print("failed")
+    
+    pr.unload_texture(image_Background)
+    pr.unload_texture(image_Base)
+    pr.unload_texture(image_Pip)
+    
+    pr.unload_texture(bird_Fram_1)
+    pr.unload_texture(bird_Fram_2)
+    pr.unload_texture(bird_Fram_3)
+    
+    pr.unload_texture(image_Beging)
+    pr.unload_texture(image_Over)
+    
+    
+    # pr.set_target_fps(60)
+    
+    # while not pr.window_should_close():
+    #     UpdatePhysics()  # Update physics system
+    
+    #     if IsKeyPressed(KEY_R):  # Reset physics system
+    #         ResetPhysics()
+    
+    #         floor = CreatePhysicsBodyRectangle((SCREEN_WIDTH/2, SCREEN_HEIGHT), 500, 100, 10)
+    #         floor.enabled = False
+    
+    #         circle = CreatePhysicsBodyCircle((SCREEN_WIDTH/2, SCREEN_HEIGHT/2), 45, 10)
+    #         circle.enabled = False
+    
+    #     # Physics body creation inputs
+    #     if IsMouseButtonPressed(MOUSE_BUTTON_LEFT):
+    #         CreatePhysicsBodyPolygon(GetMousePosition(), GetRandomValue(20, 80), GetRandomValue(3, 8), 10)
+    #     elif IsMouseButtonPressed(MOUSE_BUTTON_RIGHT):
+    #         CreatePhysicsBodyCircle(GetMousePosition(), GetRandomValue(10, 45), 10)
+    
+    #     # Destroy falling physics bodies
+    #     bodies_count = GetPhysicsBodiesCount()
+    #     for i in reversed(range(bodies_count)):
+    #         body = GetPhysicsBody(i)
+    
+    #         if body and body.position.y > SCREEN_HEIGHT * 2:
+    #             DestroyPhysicsBody(body)
+    #     # ----------------------------------------------------------------------
+    
+    #     # Draw
+    #     # ----------------------------------------------------------------------
+    #     BeginDrawing()
+    
+    #     ClearBackground(BLACK)
+    #     DrawFPS(SCREEN_WIDTH - 90, SCREEN_HEIGHT - 30)
+    
+    #     # Draw created physics bodies
+    #     bodies_count = GetPhysicsBodiesCount()
+    #     for i in range(bodies_count):
+    #         body = GetPhysicsBody(i)
+    
+    #         if body:
+    #             vertex_count = GetPhysicsShapeVerticesCount(i)
+    #             for j in range(vertex_count):
+    #                 # Get physics bodies shape vertices to draw lines
+    #                 # Note: GetPhysicsShapeVertex() already calculates rotation transformations
+    #                 vertexA = GetPhysicsShapeVertex(body, j)
+    
+    #                 # Get next vertex or first to close the shape
+    #                 jj = (j + 1) if (j+1) < vertex_count else 0
+    #                 vertexB = GetPhysicsShapeVertex(body, jj)
+    
+    #                 # Draw a line between two vertex positions
+    #                 DrawLineV(vertexA, vertexB, GREEN)
+    
+    #     pr.draw_text(b'Left mouse button to create a polygon', 10, 10, 10, WHITE)
+    #     pr.draw_text(b'Right mouse button to create a circle', 10, 25, 10, WHITE)
+    #     pr.draw_text("Press 'R' to reset example", 10, 40, 10, WHITE)
+    
+    #     pr.end_drawing()
+    #     # ----------------------------------------------------------------------
+    
+    # ClosePhysics()
+    # CloseWindow()
+    --- End of File ---
+  [assets]
+    [objects]
+    [sounds]
+    [ui]
+      [numbers]
+  [source]
+    [Game_Objects]
+    [Sound_Efects]
+      die.ogg
+        --- File Content ---
+        OggS         
+            z!b
+        vorbis    D       q     OggS          
+           SH=vorbis-   Xiph.Org libVorbis I 20101101 (Schaufenugget)    vorbis)BCV    1L ŀАU    `$)fI)(yHI)0c1c1c 4d   (	Ij9g'r9iN8 Q9	&cnkn)%
+        Y   @H!RH!b!b!
+        r!r
+        *
+        2 L2餓N:騣:(B
+        -JL1Vc]|s9s9s	BCV    BdB!R)r
+        2ȀАU        GI˱
+        $O,Q53ESTMUUUUu]Wvevuv}Y[}Y[؅]aaaa}}} 4d   #9)"9 d    	")Ifjihm˲,˲
+                iiiiiiifYeYeYeYeYeYeYeYeYeYeYeYeY@h* @ @q
+        q$ER$r,
+        Y    @R,r4Gs4s<s<GtDɔLL
+        Y        @1
+        q
+        $OR-r5Ws=sMu]WUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUАU    !fj3a 4d    C
+        
+        Y     К9堩T's9ls)ʙŠКsI
+        КsyҚsasiҚXsYК樹sΉ'Ts9s9sΩ^9sΉڛk	]sd	s9s9s	BCV @  aƝ }b!!
+        t1)
+        FJPR'tАU     RH!RH!RH!b!r
+        **(2,2ˬ:C
+        1J,5Vcs9HkZ+RJ) 4d   @ dARH!r)
+        
+        Y      $
+        
+        
+        
+        
+        
+        Q%Q%2-S3=UTUWvmYu۷]u}׍_eYeYeYeYeYe	BCV     B!RH!b1ǜNB	АU        GqǑ
+        ɑ$K$M,4O4EQ4MS]ueS6]5eUeveٶe[}Y}}}}}u 4d   #9")"9H d   (8#I$Y&yg驢
+                h爎(ilʮ뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮@h* @ @Gr$Gr$ER$Er$
+        Y    1
+        CR$ǲ,M4O4=3=UtE
+        Y        
+        K
+        $QR-R5R-UT=UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU4M4А    䤦zb9AhI
+        \:霣\#FI!SIZj
+        sTdHA-R!BCV  
+        M
+        K       I M      4@=@E                                                                    
+        M4Q4Q       MT4      @E3E@4U                                                                    
+        M4Q4Q       MQ5O4      @E@4M@TM                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           B!+8 @ I4cY<xLX<         @4x
+        <	4σi          y
+        <Hσ4         L	фj<ӄi4a                          @!+8 H  8dY  He eY  ey
+                                                                            @!+(  Xp
+        cY@,
+        `Y Mx@    4%(4d%  p4Q8iq,KDei"4KDy	<ӄ(iQ4M    6hJ,PhJ  $ 8y(iq,DQMSU]X牢(.4EQ4MUu]h牢(.4MM4UUU]扦i
+        E4MUu]h@M4Uu]h4MUU]וei,TUU]וe꺮+ u]ٕeYຮ+˲,    :ɨM "   aJ1
+        cB
+        aLBH!dRR*)
+        B*%RAHR2J-R!J RR) 
+        8 
+        X   cb9$BJ1s!s9c9眔1sNJɘs9'd9眓R:sJ)t9礔RBsRJ)s9 @  6lN0ThJ   8i'iIy'iji'i<DQMSUy牢(r]QM4MU%ˢ(
+        4MTUUii¶UUU]ua۪u]ue뺮,
+          Op  *auBCV   1)R!BH)    @!+p  1c16a1c1q
+        c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1ZkV ΅@Y3$ 	  A1$JJB9(%ZB1Zl19Z)9礤Z1Z\
+        !Z-l!Rk1Zc3JZ1k,JRkkE([k1Zk5)sKZc&1Zk"R2S֚0c1Z
+        S-ZkRJ)#dZsNJ	e-Քs @=8 @%A'Ua	
+        BCV  BJ1Ƙs9sRs9 B!1ƘsA!BHc9 BRʘsA!RJ)%9 B(RJJsA!RJ)R!BRJ))B!J)RRJ)BRJ)R
+        !J)RJI)B	RJ)RJ)J)RJ)%RJRJ)RJJ)J)RJ)RJ)RJ)RJ))RJRJ)RRJ)R)RJ)RJ)RJ)RJI)RJRJ)RJ)R*RJ)    #*-N3<G2L@   ZrIICF栤I!XKe AIJ)*B˘R
+        b+1t1G9TB     2@
+         8@H 
+        
+        
+        
+        E@@.!pL8'6  A 1(*| H.\]BBX
+        @	88'ST@     
+            "" 	!)19A     ;   HRh8:<>@BDFHJLNP      @         OggS  @f      
+           xZ'C6LWCk]ohmpv 
+        UJ[[׷o[ũDn~9ŜH'J]f$0`kb1
+        0
+        P
+        
+        +֬X ֬Yf͊
+        FQ
+        =!J,R
+        6Jęf#"C#V5~"	qWK df]Nrړbݺ,maZA@hܓ`v
+        A8
+        AaI pG-v{"ZEQVP6tKఏBZ҄PUkiR$
+         -0
+        
+        `۫
+        D1J?
+        ~mǡ
+        HFWdh
+        ``UD@kbH 
+        #%N;+)\ⴣ/Z$
+         @#֒gG) b$a$@-6*b# &[1DŰĊVM*M
+        3| 
+        ,+͂(0JIBXb[ VW"" `VNM)  `'֪l0
+        +Ĕ2VZPF0E(?%iT0jUZU/`b
+        #?$Ey p
+        VxORovp_>q)M'X}e RI,og濇$f
+        
+        W}j)Y6c<
+        6Nuy<)_ 
+        K]$
+        R
+        
+        Ę0"5ll-jE+"bٌ j J%% J	в4]C( .*6 `b  /X!s%" BAjKU	hX  Kif`X[uem@PEQϊ<  ^eZK
+        Y!,
+        LM+X5lT<
+        =6GmE-@   ^bf/DnZ rb_H^
+        czA⠯x;V\Ӏr.}~̂I}cQ5aN/BhƪmbDP  չĲ.|Zހx)J,q*&fff&IZ&bi$ 7
+        D {[[ưX)jժiZd̜Xf9U P K5D 7 ܀UT hbuJ׹*E(VSQUty"
+              >un;U8+V(v?bF
+        KʲK
+        E  IQS7 lUFmATUE#h(9(Z0]""ѼT>&;Pb`fCvd|~r
+        
+        ukRK!
+        ̊Q8b~
+        m[IJ2+F<s(
+         %  ބS	H"S]b1bfffff&-V{3iCVⱏL
+         P" D@M[;F6IJ(!
+        z?+
+        
+         VFFX>%t]X& 04.Z
+        IMf
+        ^m`
+        -0,DdΚefjR,F Z8d}mwb#"jr%YjaXѴ"6cV*ZAl1 ґ8^6!!  )~X\EF}ԟP^dFJ=LY>I0 -q7CpCr! 
+        +uuT
+        zkI /:wqJգ	% jR  Zy:w\s`&&fbGbbLMqR_-W5g(j048m
+        
+        0
+        R/1
+        ,"-U*),-D,aFTUg;9a* AG.:6{kbi !HB.؂"u
+        hmuK,*aؿGڪJ@D !h3
+        615 DH/j	@&H	ÑWe4 Y!i_Z8
+        ?@$Mc(؊
+         ip'0+< <>T/sܿ[ 
+        T8' n
+        =
+        Ns	mg^a! ADS"T&fNeff
+        H +)>K6Y
+        ,Ū5d%
+        JGϓ&׳E5-"ˣ
+        "
+        RAIJ^ǁѨk7B1 qA@
+        jX U;H
+        X:eͺѢ-"" +$!Pwm	 `6^q
+        EQD*:jVTqj>-)t:wt#I"FUoW5n &4AGِ	xJ2V\!I&-\}pp(gfӶ-9-	؈Cf%Bb,l JxǤR>y- 
+        p'
+        cZ m
+        0((Y룔N\f1Zӄ@ֶ7zMF Xia&
+        B(jI/Qim
+        -.T3p
+        
+        mBVYCV'l(9Z鮨
+        ,J0bm;P%A1Ą!n`aEYp8nIVZb0nZ*+H8t lah{wJ#MI" lbmRMh$5
+        @)ȟz
+         X&8`$ d[z_28gI^ p
+        /!Y0^\f8)ԓۗ@^
+        hi$I84ΥUX:!IF
+        $Bd؆<oN%`o~K 8eX"3o;(@,bҮ&]Q2Y3bZӪXvJ80i*h ETLS}Y".`\jUQ** պ wSV$[u-=*
+        { ,u.n_C
+        ܃e
+        xepjԵF5P*{,-F  
+        v,d i:9s
+        Sh1X[}ːr)T<
+        s06 cD@hSdSH7*_/KmnOfG  qNM hﴐ<F [~|.o
+        #idV
+        ^8%,& iGķN
+        \EZ_WxB ,l&2! bH "nx+̛!hbj
+        
+        ŪҠY6("Q
+        A &
+        wUz< K@fH{H
+        BEByF
+         e@ ff,
+        Zfw xܻ
+        2VȴQH
+        Я"4@u-   nF!EV.  ZA  LE`nCЌX0" 4
+        ev&OK
+        "F'b['1ԧ=2q^ ,/DJ2'ɟ9oQ?;ID(SrY
+        +>|>(6@
+        UZ'yH[m蒕jQD  `;ȬV2H
+        N3ڷ+Ifb11f`	#4ڪ(&&v>s-@PD
+        !7/fŀ;j,Sт  I,<
+        ]y
+        Z uyQ!
+        "G
+        )O06}89PBE$f<9L0ipYἪ*zbE
+        ʬ
+        	07f	0W
+        0# @T(=Buc dM
+        -	@6,^;DImd"
+        S  ,g\`XCӅ5t~Wyw]jnOnE=ٵm]]CA & =E븻nW8)  eO Hlmd&^$f3
+        gqtݎ$q+-hc
+        bunEԂ,;իn6fADSzdtMU@4!MA}?0$VX`bgHn%P%}DL."#[՘ZZ^
+        .EkEL(ePAM`Ef!P' b
+        6XD L ˊ")F65kT:C
+        !`
+        A÷A@! l㦱(Onht 0n DT5i{[݅uk+w,m
+        E` OggS  @      
+           z|Y%rF@PT)O!.ˬ^䥀R
+        +h+Wj 8w҉C$@ڀ&QuL,&F̒42co~Ji#\-tiAwJ@Z:!B
+        5ڱa
+        }d sw
+        e[X=jci{94{1uU#*Tjb
+        lAuԝ#%6;
+        ^U)3鷇68,L
+        ð0txi')	I&EeXe9
+        xj
+        C *b. ,HA`
+        z`ZeDe`wi+52ER	Yc`լ'\, HȀV2X*ZS##'F&-9Rƾ<o{߱r
+        Ǣ-Jc#_Ųkz8K/pB8
+        ^8!s-t,Q ~I@P3]dZ<(Mۂ!jh-tY 	x i;k
+        U!)lqyHb
+        ҋͽ.!%kU<^s1:dCSiN0bo>Ϯ9Zh^5>eW-{M `gYYUՅbJ9e~1Y.k	^NZH\RtQ;NFr\5IPL)  ۈp9K,qY ly^~%  _F*E
+        D
+        wSA5	G rr`n 0r[I
+        F^*pd c49{7be]bف]]*Nǻ^=@
+         䇚!*:,
+        m$J   luTYEAUb]&I.n`<4A(nd
+        @cAF6H&4DHdVPx"{ѿ
+        ٶ2l)
+        ޾khaL  |(AM*
+        Fr>ʮ'{:I\̉;&
+        Sܹ\ft()hz
+         r:D.D鰣٠!<
+         ȭT34]*^g1ۀ8r.i]f2*aB(9WW)!`X*?=X1	U-bEa]h=ib@ ! h	\="v:(K'M}+t
+         8$B@+2,$2G`% >M@`Z%|$:_
+        vUZK:
+         SlЀv@ud̮#EeWYdkFYӤrsx(sSmZ]	.E+eՋJxajf<E-vsLuq
+        wQYC5N`HQt
+        
+        2v\MNZPYLFLw2
+        3k{_xoiaci
+        X@`Okm0=ԓ>ƕᜧw&\"kax˲rI)\pYq@
+        
+        ++
+        jc`aE2ʦ
+        Ijt`Z-T 
+        KUR8)xn(Q4$:7}_e }qK^u/W\x
+        3E&mAsTG UoX%~^ڊA
+        !ȿ	m	ў  (j*
+        Ęf!bxs7h}{))a
+        %jm5de+Zi0LN
+        .ð2_`[U
+        [~q05sO-}n*>FZг^J
+         uI4YBW35OdDZLw`'@YʈcigIp0#.eќ7's %Bo|ͨ2>T"aUf`U S@F=BA8I^
+        REU
+        b)/nXvѸt[Ƥ
+        PQX<
+        R"5*J"_eWp'` XH8x?D!J1eFw6m0  m
+        /Q@Z%
+        X N
+        dn`v̚J[1R*-̫D>W9
+        _sOq"{\?͐,{!3)|9>>	ӥ'Iqr//q1
+        UTC̘aԥu-e>L骬⭋Ѽ\Ðl
+        ۾g.wJQx&<^5"!m@DUQBj&\|b`l
+        kTǃO;13B 
+        (7Iv ̌	VY.  GMǦ)
+        ̕(@$!9
+        kE\  iYddr% ^VrM
+         7<v~S!$"d-h7G#
+        BfiT2V
+        Y*R-5XQ@ ^
+        Z^>Z
+        \
+        5M5]Z
+        kB-  @f/̤
+        bY`;+|I=\'"@0uW*ׁ|zɋ^Scnddqmx%ObKROf>?ѵzY{d/Eor"vUr}~לu1#F)jeRlu3wZSͳ0qQ`_aӒ3
+        *eVxs1Ѡ2^
+        T
+        iFKAxLv)f5)
+        SH򕯇g9+
+        by˵YE1	&%#p
+         [ɹaXagQv
+        P2X9Y@.(c
+        qZշ\K';/Y]"d71XGk7NGb+¦VG` >  nH F
+        ߆)b̤wmW:VƥH`%ywl3F-&BAZmxK
+        !avrSn;鸧9
+        "I:ujt+VocyN'?[ock{	{{(C֑gpۚ)2s7:l5ܹˌ\Bb9H*+!0]@+I
+        CeQMUihJ]qb1mmGw0
+          ۽jS)aq3B\TBto[ "c(ڽpl`',4'cӌ0K$ H+ Dxp
+         jX 3yorP
+        5
+        7lՙ;goP֝+⇢    G&`~ mh}
+        f) 
+        j%}\hSR+L=O W,	z55@G3dL
+        csIE롟kl
+        ar04VT9!KNx2g	>Yלaq]#׿i
+        ٌySs3 hGi(J(QJ
+        r"NcaY1r@"Q^#g[u
+        ASI?@!q@
+        
+        2w`HK7R/|PQx$Ȳ
+        Eer@J
+        Ԭ1dUG8D,XS $	F8
+        D}BoՊ
+        r4%  b JI@l
+        8 D	1, ` 4K( >6
+        ς#}ΏH
+        Q
+        6
+        .s~D*'   <N;m `꧗LRC  @sMS%C|R_@͈yS R2
+        dM_ՑZN7ac0I_ϙ3'
+        	nmMړ隗s
+        ؤCʞ^C\*d}~ܘW$?mw:Aêl
+        `T;2ʓe'U3]5r%00l^se,8yg 32ͅZp-ju{{u(%\ R 	ܩVթ
+        ,&tik1֨0
+        b:RjcBYR Q
+        +Z 6,:<U  d IC 
+         
+        FVrE3fW+X#1~  
+        /_Կx `ԯ0?+%3S
+          674ͦ
+        
+         PQc^QsvmR2 8K}ȳ
+        WBҞK^[leEz<'V!bG
+        3|T٬w9u|b='oZ}2)w۟q'n.
+        wl9?)g媟O&ӕd?9;l3
+        M:c9k2+[ᝉu540 ʏ3Yp=kY
+        (&4w`*w	CXe4xPUK*z`EDp)
+        BY0Dȓ`uez  pN;.,G+MG M  H J
+        I>$gTxOggS ~      
+           oxsyp
+        F
+        VCܭ`ƅYp=k$.:~  ~{2
+        !~+
+        KcԢecV)f T
+        t.QV !@V		"L!GURƽ-*ϽcExUOkOP˧Լ8nSM0;sN0pu(Cm<꯽NSzwנּ7wxJśPũ~q`=QO!Af
+        ]r,| pg#fjd
+        oK|=rWkz   "3rXi DLW6nd"uLZ.T/m9
+        ,hea
+        3zi4 ! LOU4 ϨR1CC֋h
+        ^jH  
+        FsKy٭D?Ň{KH   <p0Os$hV_&`  ȡG]xF&Po[^]ܧ\ɟ]aϸPob
+        g5t)G>1HGnWoB+/ATu(soS7Ov^};} aѹojq`U3.[7JZRzW9zFQZs&T@2P!z3MP!&GtPT{S ʮ8&Q޸U%u
+        qmǕZXKeMg	Cq%N(
+        `, HX>HwD
+        c 
+        dujb,d
+        Q XV$I 
+        ,Y
+        ma;y}آ
+        `CEg^-¶}]pQ}wa&} 'Od_)&U4ZPUu2	(`-|:ΓyO?9SaM1D^F>
+        ~̟=9E
+        (ZY
+        #~>ҜN.֘kq?mY>PC~
+        M
+        
+        
+        fr 6k
+        _mfhtf}J7`s4ѭ?͛Fs
+        р=@A$<
+        95@/KwXSI%	*&ɌqxZuYtJ
+        EHU!U̖:rQ5 
+        
+        
+        f8Y
+          }Þ7eG
+        /T "^fp 9 
+        Q&ҥt,
+        
+        (޶LPt
+        #ܠ>M ~
+        /޹![S$,h
+        ~/-)
+           sw[LμCK
+          & ^2
+        [iU
+        u !tuMڔhF=mġ~Ax_ồe.;~۲e;{ӵ偦DOv6Q?9L
+        .Ϯ
+        1K=
+        ?߾:?֯23=
+        Rq~Z?3CPuO3vYGq^Rfsn5
+        P]9=QIe_@`;ҒIYbipzQQM,굶or̩^ڼR#!:ZW
+        R\#`(
+        mޞ Sln @
+        L(
+           X -d{\ز8q2.,il
+        ,d0Z6
+        1 >
+        %
+        >XF	aB+8?7<CM>   vT;JJ  l
+         dXngo򿙦FsQ:gd?=Ә$ґ̒ny,\NA4&~h5{O0'G5w֧NecwLTs:*.SoggqI_vA3l>
+        ٓo":4$t\J}w
+        pi
+        gKLv䚱
+        ~22qT;4ŕT\=Blq]Z++!diK
+        ka&1_St]-00,YH {>,= uM  #S FB   scJ, E
+         2ؗDn]	N
+        Oڌ7f վevk_Κ
+        [f}hE^UCRL2E  #4qXk+KI|Ő=>iL1<p)&M|yٗ|.s)Ҥ~N$?y[`#>
+        d6KBuI_Fi
+        MU1y>4N@B6lrH05:
+        U$S@
+        1
+        0-fIO|^n,X֒jQЕY
+        EpLeGƞYbƮypǍߛfB6). 
+         `	@
+        o 	  +$L$%FH
+        2q$
+        h>f$"V_oWcF.s7]<@w9
+        ֓hykjT	t  YS/5܃303ʘA]w:@CvoVfHRJYݗHêsk_u}}:F^Tn4nvezqkWxgkW{õ?\_r۶'~9Mt8 
+        㫌\]^lQH9y5COwB3޻|m
+        ;7ެ~b1^5r^a* IdE" WxfJHxf3TV֩^H 2ޝ\T<݀\'   /( Ē*j #*y eT=Df_[FeC݊S
+        o^w|ZbI  d!?>6xk>9:p
+        @nw`{=
+        uϵ
+        s
+        ц?yD"
+        祚''E
+        ŽOG-,1Șa!@. bWwI.
+        ̟v'Y]];(k2Ψ3rmǷ	`U"bfｅL&E @{IY]	
+        =4襻:NǸu{
+        k{3yf]3C	os.T0YU9՝<gְ8 pb&
+        <
+        H
+         en"Sц=[g՛eT"#_|أ驴3xy} =zmͪ
+        T$	   r;7۞dԧmD>@73#(f
+        79wG>} ?
+        /,} .
+        hER?/0S=' z.YQ>ש"٪e:3{Ȥbί	87۳QǸ
+        ۜZGD
+        >bsν8]نzfWW13w4a`* SA,[Y=	Зw|mo_o]UsU9E!lt9Ɍ[}rߝ.N!?E
+        @   ~ M(8r @HRJ
+        !A
+        
+        eDC#Kzm5)"&r
+        ~
+        k-=~~
+        acmkFXUJ, Ɏe/W10Xs:cg#Aâo~	OoY,^Y..'LO;{::l@MbLNr&gK9;EL&3=$u9
+        KS@ٹ7g0tnj0Ut㚂499+\|	g7
+        `Ṇ*Iw^u^ }y6ECw1:dН04UwC83d&F؝݊D@:ɸޯPTNR
+        @!!UQ_J{F-T" ) 	 
+        eGap Hj7oiy
+        jbMLJF /|rpm!b^
+        Oɰyj.	"^.C
+        vZ~ 
+        .YIR
+        *jπtx8L7eoX&{BsQLi
+        nJ*kv6byIeeɰo]
+        71q
+        r @[w[T
+        {%Ϝ,ځ;'
+        [X͵iFd7雘XSPIAe5 5Zg:或
+        x[f\ }g*tC!QK*k ` Zo?Nbq6~o42m(:o[
+        * 
+        --- End of File ---
+      hit.ogg
+        --- File Content ---
+        OggS         3+    <ڗ
+        vorbis    D            OggS          3+   sc=qvorbis-   Xiph.Org libVorbis I 20101101 (Schaufenugget)    vorbis+BCV    1L ŀАU    `$)fI)(yHI)0c1c1c 4d   (	Ij9g'r9iN8 Q9	&cnkn)%
+        Y   @H!RH!b!b!
+        r!r
+        *
+        2 L2餓N:騣:(B
+        -JL1Vc]|s9s9s	BCV    BdB!R)r
+        2ȀАU        GI˱
+        $O,Q53ESTMUUUUu]Wvevuv}Y[}Y[؅]aaaa}}} 4d   #9)"9 d    	")Ifjihm˲,˲
+                iiiiiiifYeYeYeYeYeYeYeYeYeYeYeYeY@h* @ @q
+        q$ER$r,
+        Y    @R,r4Gs4s<s<GtDɔLL
+        Y        @1
+        q
+        $OR-r5Ws=sMu]WUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUАU    !fj3a 4d    C
+        
+        Y     К9堩T's9ls)ʙŠКsI
+        КsyҚsasiҚXsYК樹sΉ'Ts9s9sΩ^9sΉڛk	]sd	s9s9s	BCV @  aƝ }b!!
+        t1)
+        FJPR'tАU     RH!RH!RH!b!r
+        **(2,2ˬ:C
+        1J,5Vcs9HkZ+RJ) 4d   @ dARH!r)
+        
+        Y      $
+        
+        
+        
+        
+        
+        Q%Q%2-S3=UTUWvmYu۷]u}׍_eYeYeYeYeYe	BCV     B!RH!b1ǜNB	АU        GqǑ
+        ɑ$K$M,4O4EQ4MS]ueS6]5eUeveٶe[}Y}}}}}u 4d   #9")"9H d   (8#I$Y&yg驢
+                h爎(ilʮ뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮@h* @ @Gr$Gr$ER$Er$
+        Y    1
+        CR$ǲ,M4O4=3=UtE
+        Y        
+        K
+        $QR-R5R-UT=UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU4M4А    )ŚPANJEi )؋BQP*d
+        @1bcB̋sA/ƸRB(BCV Q  I"I$I4H$#<$z<Ix
+         Iy
+        ϓD<    B!+8 $y
+        I<y4M!"3MfLSU"3M'LSU(*Uu]d۶a˞(*Uu]lٶ!   $OSMf44jBU%3Uf44BU=St]Lu,C=t]Lu,C  H44iiESjJ44iiEUzLureY-{Lu]Y,  LӖEe
+        LS+Ee
+        UՖ-SUY溲
+        YUUlSUY溲
+        Y        MUej2וeȲMUe2׵eȲ    @!+(  X"Ǳ,MMcYf$I<4Yg4QTUh(*    
+        
+          lДX
+        А @H q,K<DQ4MX牢(i*Ǳ,EQ4MTUi'h4EQ4MUUUh(i.4MM4UUU]yh꺮
+        <OMSU]u                  
+        8  A'Ua	
+        BCV Q  11ŘQ
+        B)%4JA	%
+        BiIH2)Z%ZˠZkZk   
+        А @
+          R9
+        5F)Ɯsc9GR9 *ŜsRJs9(9sRs9J9
+        TJsR*%c9'    F	F
+        
+        Y	  
+        ǲ<L4-I4QETUK4MMQ5Uei(.M4Q4MUu]yTWLSU]W          	 @6pR4XhJ    1!d
+        BB)  0  `B(4d% 
+          sIIB1 RcA(1 RkQcA(%֢k!RJEB(%ZRTJjTZ1JsJcRZ(t2c9d1Z
+         @hp  ;auBCV y  BJ1c!c1R1T1
+        cBc1!d1眃2cAs1 9ǘsBc9s1    E6'	*4d%   Øs9
+        ! tB*T9sJIx:)!RJ*sJ	Z+.RJ(R1RJ)%֊1RJV1TRJ)bZkcl,%Zkck)cc\Kk,{j-Xc1[j)\
+         0yp JqBCV  BJ1Ƙc9sIs9 B!J1sA!B(s9!B!PRsB!B!9 B!BJsA!B!R!B!B)B!B!RJ)B%J%R
+        !B)RBI)BPJ)RJ)B(PJ)%RJ%RJ)%PJJ)J(PJ)RJ)RJ)%RJ	)RJRJ)RRJ)R)RJ)RJ)RJ)JI)RJPJ)RRJ)J
+        RJ)    #*-N3<G2L@ R  B(RJ)5QJ)R
+        RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ>6pR4XhJ    01Ƙr9s9H) tNJ)=Bz!B))C(!R뱆N:k!Zj
+        2(R=PRj){K%ZkK*)z9RL- ` `'Ec b  C
+        BH)RJ)c1c1c1c1 	  V+j'tfdȥTD#5b%ء`!+ 2  Q5^+bj,
+        AAe($)XSȔRY%tL)F)BƔc)tZ=TJ
+            @P`   CpK(0(
+        I
+         @"3D"b1HL `q! 246.. tqׁ P@N7<':      x  H6hf8:<>@BDFHJLNPRT      >   "9  @     @         OggS        3+   "*GE@KCGGKyuEs{zCC=DsrwCFE{yyDEEHzzqtwsq]$!81t$KL?K,k
+        sGqE%BO\/@H
+        8X:ti@ th,1
+         th,1r WIbA\ 
+        "Թ`,:#Gud1U	͉z4
+        Ac
+        
+         t 8*#13#Ɨ\3ť~JQ
+        ,\y r"ТFC@ "+)]iP2
+        2MR"S'0DG[I [̧$-PǗؼ26
+        	h
+        bO4EL)e *2( A
+        $Ӆ
+        y
+        05
+        !EQD7>C1h |
+        b0a_;a
+         
+        S	f3*̏B1xVaq2F"N=dLH
+        FZG01yLh4$p @ʈBL1C,:]/:
+        w[Z*+5
+        u>D#D
+         7UUbʲȀ
+        _1LC#zf ɭ&,QFk:Ql `eF0qA( DX2D)*c	23SST{t28JE$N!-YNiBQ"DTDPP,ʲ@͡{v1
+        6N8i&6L#1|sx
+        a2  4
+        
+        زFBFѢVrJBx
+        >s@(.7Alt˸TB& 4%.N'
+        G:O{p@,VsaE
+        Z,"'&acr
+        o3D
+        w& @ލ  wBEE-YQUKbjWݜJñH$YbHB
+        ĉ(aB ´"6,X
+        3^9>]h
+        a5Gx0:
+        .! 'eC.s@\bj0+X̄\
+        C(q9}j9
+        ^033ITGf6af
+        
+        
+        X1LiM:
+        C\CB
+        :s3`OitWtay0B#<wӂzuI(
+        
+        t 
+        >C
+         E
+        :ZaSi@		DEu "{'`LNÄtEi1N xo>؁ D:0!bhm46Є~ؘcA$P~̖CPQ2[0|"\&r83tN
+        F>DjC
+        тB<
+        M 
+        D 0lD
+        1)"g
+        BX(dQ@L&nB2%*)ɐ:a8oo{/{SCobp*{]0
+        LRON: DGDAD- Q<ɍ!TflOdQ |P% 
+        DpDi@)"
+        ВRY%	Ӂ [GL'[
+        CX,V
+        9xmŁaEa!0L]$4d
+        :BYs3t9T1gd,\
+        
+        +]
+        Q-!B]xz
+        E*t
+        IE%"3;q
+        ,6NjtV1
+        WNt
+        214(܎иp;F4+*L)3AHH"' Qrhx0SptD!K[$@T
+        nDj!JB b U2SR"fVmD(LCG
+        i(w0y18- t61au61a
+        J
+        c
+        
+        Pdf2zq
+        c	EԘhC7BVq}J
+        [EUedX) %Kv9^.'cH/ff,= I?c
+        @a ^SthDVk
+        hwM@ΰRF$$e
+        E"&F!`&
+         phkkдqdcba7L[66iQ+"ǜs8"aq	JNF²u,
+        Ӭ%(ktQS!MiqqQQX "NSb'ℂ@ BI~|ġ8bo'6V9pdjk4`u[[APn{3ݶg&{2٭d3T\,8"","Dib"3 %v^f:X
+        S'ph:4
+        uӡlkX"3^)C# J1LޭciBvHa <
+        CYm`qr@wD-58	@bBd :  
+        W  6%e"Tf
+        	)%l0
+        4mmzu
+        DՍFF
+         
+        (@pd	WTY)0|
+        z\x
+        bCQUu!=фȡ#> ge^> ge_.ʲ:5ΕZ`ɀ$1q8-F
+        D
+        4b,^-ĉ ALc31VGvv!<;;{5mi'V|x\
+        !0T=VFPR62%*QAM)YUH!0W p	,BXRTT)$Kuh[8qX
+        cjbku
+        
+        s
+        S8zL^W.i bVڣ\rG+*"*D
+        [*nJ
+        HJZL 0(%FRąM
+        iq0(%jc똭ivS
+        XXsBPC >5 ,  `A(*K
+        e
+        Ox3#2ʇq
+        ^!D Tf
+        56aMh]B4"u&"u&eUQĎ*3 R
+        
+        &v-;&bbq,~wѢ &,Q h"H2LB8xzWO<m)|	g4ECZw #%ZHHdhYeޘ`N5\:.\\0a~cE1bFtvdxYҡڑ-*
+        r7ؘmFM+r  ,BDhqQi&BT NV
+        E
+        92mL:#KptVjZց;[Ƒ:bWHBu~HYT  @tZRt;-"#3@J.F ` b"",&B!3Eń4R0-N(!-(CS-69*b
+        ő=v6
+        WVN;XՁ"x
+        {LTzQY/J j)*2S:Qc5'B
+        @B Z
+        b"DT(JX@b`Qlmԁ9fXl
+        {jgkcC
+        -6ja5
+        {b5\
+        sq|z0k> vQ
+        $HBaq+VC8{S	
+        BAD4-jZ-Z
+        qZ
+        Y`5D-m,jo٢X0
+        Z
+        8{jp¢a50̐
+        |qa"BrdO6\͍"kL챪8")	P8@D(X Dq1Gjkkc[OՊP
+        cVS
+        G؋5
+        ud1Ű
+        z$RI"(2[*IE*)l͔Rr\0BQQ"F .hPTDp(#	lq@LS
+        ao80L{b'jgg;lvۋ
+        Vy
+        s9juz$aVwhW^[0yp Rr*)#)
+        h
+        D ..BEY
+        d
+        qsV:6۰qq1MUax\נ# VdpN{U+\-SJg)rAxb(J@	ieQJ "SL;
+        84L[^Lbkb1mL
+        {-Q[{lm06-z\8 Z
+        Lf&LH̦!90|P!
+        DPEC'p`;aญCmD
+        sdj5
+        ;bXMECvvX
+        :0keDOggS  =      3+   {UErtpr~|FHExqsizrkj^J`~^J`~ߨLIGksULYy0J&ZLD,8
+        DhADEE
+        qYlbk
+        `V[Ei,
+        AG f,ܬ2xVWEw]RJ
+        #`)1%$ bb
+        v408f=N84ša5
+        q`1)ΰqӴE
+        ZNVXȑ! :%l z!+)j,ed:cĒ  "\1	F## &) EDB0$IHCê㠶vH
+        >\sqe
+        cZ1 3L.1
+        ez0P]X]8bOqx%L2#3	80>3gtc.1p9^0ׄb8tC	1`,ƄOPI$>"0tDq3H!Gn1FzB
+        Gkӄq  z#oݨ?Zmк]#~W?
+         
+        J>tB`/ 
+        Ќa5p tf EFa hs(
+         K(2 9OU$l&Ē  
+        >˂rB! 0
+        :U
+        9as"6*"i
+        N`gV[jUPv؈!j䀙^p}t=<k8>͕MA
+        &3+Ju
+        ze
+        I0s1J5溲#2¢.N< 1aXp#`pHXلN#t.:
+        tNa!TJuL;uzC- R!1-6b 
+        @D# 	13ƣ7hM-Z~
+        pF2-M?h
+        1hQ ">[b
+         |U.րYRAPT**RVr'w%l)繺]KdJ$"@@db$
+        &0
+        J"b4EBD ""41Q50,&"#+jC;PEp(b1L{Ű3
+        8&VS
+        ;V-"VZM!" b*`u|"Oȕ
+        :".>0La8
+        O`<fȐ9j'N@
+        9d^G@. 'BEzuAC
+        5{^GN818[WD#01D8p2v6!vb'@u z0R"C3	к6h'uZۥӡ~
+        7
+        " Z
+        (  -&*"BD
+        I
+        {Jen9JLY$c$ yB
+         ,'4"
+        XLL@	8bJQL
+        EEAD!JP YT\☍acjc6հ;P
+        YjcX,51-joZjb:!9r
+        9 +
+        CazPg$7C<\.PG0RBu!t{}
+        N;g$+*CTM
+        r]^
+        <̑a<wh<N28. 4t0!Н0aTOCcB
+        .	FQЍ`xo
+        B#3#) .b4ui&
+        -B WA
+        L00Dh0 4 6m%DjjE4QM
+        A
+        D	 .B 
+        \tdt:VGg2L>
+        LbYf`*䭎Q|e!"BѴ
+        lRGx6a
+        @'l6 ,Xl: ,Xޚ#E5	AH2
+        P!+B!8^#
+        #Q?b?BGК⒨AxptV
+        k_@r;[[CĜnQ#RVlM,K8| BP(.qqZ-"	( 
+        8)'!Jez'
+        9ڋj7=u,NX7}
+        T:K:0X+%
+        G,WeI3B8dI R)giZ@i!a "%B4DEE)"$N؈Xmi:vV
+        
+        Ltf}'	͸ZI4yĉfWTDeUFQJjH
+        .	˂!$)4. 
+        Ap°q֊Z
+         YG
+        sBLSL
+        V5-;!
+        A Z	
+        
+        	{=f-e""
+        E(r.$)b	 BdRYH	"0LZl
+        b1MS`:R`bVac5DM
+        jYM[1LTQ+[jc[
+        7qBbZժڨk^J^3
+        <z
+        $2G
+        xIH.2
+        !Iǅ.;#]c
+        1uLh݉pH@uc0spe>q
+        C^W
+        \kD^I-X$I-Ղ0R82Qpt
+        6& !
+        hH0>D0hƀ^Q^	2:=`bhOiA0bj?bh
+         "
+        
+        =Ph6
+        2Yty:R1),$  iQ2i
+        (-&"JSBJHD%F,J3Jôbk1,VjacibZEl-b`☊Z	r:8+:
+        20F
+        L10
+        
+        @8&0qq
+        p	! @pqII g
+        iOL
+        0
+        !Q9r芤
+        -Nt
+        c1a\a	wR$ 
+        z8apC
+        B:Px'5
+        
+        zCNjB";t3a
+        Vm¥	n
+        CHDw9|:Z0xl`nW!_4 FO
+        zqC1B0"B  >̌{ԍ23Vy m
+        Ę'
+        ׮dlȘE  hBD!&&"cBS%4-P"b"bg;i`VCl`؈[8XFbcr<&W
+        Ct3<f<`d9:rp
+        O<f.rq
+        9:8ȡ	z
+        fDd("
+        xqe:
+        W2 0:O
+        =
+        p
+        
+        0\y%35c5rQm&.
+        аBMcFAt2ǥC`!=qR}6C#"N 3
+        
+        1T1Q~M}!" 	EkcV
+        #C?žpz LCPbƄL
+        aD 6 ~
+        !uɡxIRw0:<+zʹ83$I	 BQZ 2%*EŅbD(bb,Z
+        /GbXE
+        V1jZ*b5{
+        b* ^^
+        `T3#aCg+/p="Ǖ+s=	!C
+        C8yА1NBA(Ed
+        3ye
+        CfxB#>>c䚼
+        20hX;4zq
+        ̜PF'` t<q
+        #`
+        subzJ	(C6Ѻmntg5Rg$D
+        HPHMC`L'F
+        ~1t	q>z"MtCcm"F*104Bl1"F ~iOp`CwiϏp`CwE]y.нD26c$	 ̄bЃ.P-BH:.ITabi+6j/1
+        ߘb`2]
+        
+        \0s
+        WG:CB)Nc3>31J<\:
+        ^3s@r	dDPZ-2!FX4:FO\^ԻBvgBVDQDqC
+        J$O:\p*V;UAQ@=
+        >@
+        &2u8
+        E";'Bkэq=@b26JCV7#H
+        I&x
+        =Fфb)
+        b"~G4#{O5Vۯ1cwO/## OggS ]      3+   ѕBgbDAEGDF{zy}rz~
+        )
+        3,&Tg0ϰCP2{jbRb̑Xb  ,"!t0-Q(-'BZ(SBv`5Lj54Q1
+        :>N5#\!aS2y%pz=tw&+
+        Q sQ^bq
+        B]NnNc#~@
+        uwhqta@*{R8#B) "pZ4a
+        am1эa1өHAߴ	1۔1>zS4@m-Y,Re8coqo֙F?N Ni#QC"4Ch:
+        }FFCN-&2@ULK
+        A@24 6'
+        oaB -L S(,,S2jVdp.2LbI @tANĒe$I)P, I F1%4(Xb*).q:	)9: \O@
+         &:x
+        W.<r>zcyJs0r
+        s\0ɼ ÄUru莾)
+        P,
+        +,ΰ;1]^	N[&0y
+        
+        
+        \12N[tb	aU"{' .iF$A[P7tA Ptn46ằ}&t( mMt4e
+        EkP;F  t 2d A<j,J M)t
+        YoŃ,'7pJD:2t\N0tCر> D
+        ^'\B |L@0L1b񩗨qLZBmGݶƪ|IG
+        
+        l<a31[:F.
+        5
+        B
+        )w1ːNFimx՚ਃB3gCwFo6={!# l`j o|0IL!+p$:0n
+        N rZ~r	F\& <9tp@!|< Tg2f-.ሐQc^5
+        4H
+        
+        zg^XL<
+        
+        rMY3!
+          j@]xHttUK\a s\
+        زXDQɍk
+        mQ߁4hIJQM=ZQbѭ9L9Sj.)K,=gB
+        xĲXrL(wYDR&:ͷLsm:q:NU`+4|<z4װ
+        bgb'a 
+        EYe<2anDVO2H522% B1ZĬ	b*XBK8|t3
+        Ng1-,6ƩU=Sے^LXٴw9ќn1oz,:lP&oC,lNߚHi8rqA6
+        969-bڑ$EF/UxQ&N9n-+hJ\RuΏ2auCq,MtiNOp*\D Hi< ? t aV
+        BXSuN*eX,	 pHd  E׷~^JxeeZ^
+        A7:?MN4t[U2rSUtj+JŴXޙ 
+        L`\IИ=#%WA 6s6ߑƪ
+        [5/|ޘe!Azq=#0pH
+        !IiD²)g$	^ZT]Mt}xmSb84$n
+        S+ˑ03:=;zq%-QxGkaۤFaf4
+        G,4ĸ'/AlZi!ztur+#tH?O-
+        CZa
+        
+        :10e&OO17V h&@/Htmh
+        tY $4飗dIF$ $K$%93S(Ŵ(%&B&
+        3,SķvӷgYN&"MCb֭cez֚^S\iDDMz~KnގaRm։
+        
+        _+K(FZsD
+        *'"<1%1vM1]:'C:M`AYcm
+        X(AH>T	'a"XI5dud
+        y
+        %/8QC7lVcB$$bʊMJct60!wbSgTh)EF!
+        
+        *"=  
+        
+        
+        c
+        Il>Fk
+        c3 ~&t@zgB
+        /w%23d
+        ;&׮%2I,I  )MD`HJLAI{LŰNL?~eXlnd	Nm*ښg6y]\
+        t~X
+        "4D)
+        
+        sT`R"a
+        +
+        cI$X#%+
+        5
+        srZIp)R)
+        
+        Q 8
+        
+        T̴Pb 
+        #1d~U1r'p݈,
+        ԡR8Tx
+        sF
+        NN?vGfQ
+        !'u;Hu#{Qba.Lo[1hB%aZp
+        -\
+        u;:w tE
+        bKGF`QAϹ
+        )"B
+        
+        &L/(@%Lbvi@=2"-`8WnǑ$Ir 2VN16
+        a/"
+        Ņ
+        B(c1U5yjN:,S<G&UKWc8+dqA^SX۬SiRSzuLTD
+        ֢5Ӆ
+        D.Hhe!Gr
+        &a&#׭m>1#µ6G˲s(hC
+        }>0
+        F%1(0l =J^q
+        0,B<sF
+        ӥbcK6F~jEhj2b
+        bftcS	ĀdT! t/${v0ChCu20 ~&F ΂,%0"$>	]\ŪSXb6" '3J@ 	;	'}٩#{4
+        ?Iukųm$r>v$^q%ס]!j
+        Vg_JE_RTͥPc021zz:e:.EoGJ[^J˅c+>
+        0d!Uq4nl9E r=^J0AWN_u:[$!I#lUrՋݚLW߰
+        (]h
+        $ݫ;y֢q$
+        ՙrOf&kuG?Ik9l%
+         \xkžFrص
+        
+        3z>{+MUF$LQ>
+        --- End of File ---
+      point.ogg
+        --- File Content ---
+        OggS         gK    qi0
+        vorbis    D            OggS          gK   4vc1=qvorbis-   Xiph.Org libVorbis I 20101101 (Schaufenugget)    vorbis+BCV    1L ŀАU    `$)fI)(yHI)0c1c1c 4d   (	Ij9g'r9iN8 Q9	&cnkn)%
+        Y   @H!RH!b!b!
+        r!r
+        *
+        2 L2餓N:騣:(B
+        -JL1Vc]|s9s9s	BCV    BdB!R)r
+        2ȀАU        GI˱
+        $O,Q53ESTMUUUUu]Wvevuv}Y[}Y[؅]aaaa}}} 4d   #9)"9 d    	")Ifjihm˲,˲
+                iiiiiiifYeYeYeYeYeYeYeYeYeYeYeYeY@h* @ @q
+        q$ER$r,
+        Y    @R,r4Gs4s<s<GtDɔLL
+        Y        @1
+        q
+        $OR-r5Ws=sMu]WUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUАU    !fj3a 4d    C
+        
+        Y     К9堩T's9ls)ʙŠКsI
+        КsyҚsasiҚXsYК樹sΉ'Ts9s9sΩ^9sΉڛk	]sd	s9s9s	BCV @  aƝ }b!!
+        t1)
+        FJPR'tАU     RH!RH!RH!b!r
+        **(2,2ˬ:C
+        1J,5Vcs9HkZ+RJ) 4d   @ dARH!r)
+        
+        Y      $
+        
+        
+        
+        
+        
+        Q%Q%2-S3=UTUWvmYu۷]u}׍_eYeYeYeYeYe	BCV     B!RH!b1ǜNB	АU        GqǑ
+        ɑ$K$M,4O4EQ4MS]ueS6]5eUeveٶe[}Y}}}}}u 4d   #9")"9H d   (8#I$Y&yg驢
+                h爎(ilʮ뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮@h* @ @Gr$Gr$ER$Er$
+        Y    1
+        CR$ǲ,M4O4=3=UtE
+        Y        
+        K
+        $QR-R5R-UT=UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU4M4А    )ŚPANJEi )؋BQP*d
+        @1bcB̋sA/ƸRB(BCV Q  I"I$I4H$#<$z<Ix
+         Iy
+        ϓD<    B!+8 $y
+        I<y4M!"3MfLSU"3M'LSU(*Uu]d۶a˞(*Uu]lٶ!   $OSMf44jBU%3Uf44BU=St]Lu,C=t]Lu,C  H44iiESjJ44iiEUzLureY-{Lu]Y,  LӖEe
+        LS+Ee
+        UՖ-SUY溲
+        YUUlSUY溲
+        Y        MUej2וeȲMUe2׵eȲ    @!+(  X"Ǳ,MMcYf$I<4Yg4QTUh(*    
+        
+          lДX
+        А @H q,K<DQ4MX牢(i*Ǳ,EQ4MTUi'h4EQ4MUUUh(i.4MM4UUU]yh꺮
+        <OMSU]u                  
+        8  A'Ua	
+        BCV Q  11ŘQ
+        B)%4JA	%
+        BiIH2)Z%ZˠZkZk   
+        А @
+          R9
+        5F)Ɯsc9GR9 *ŜsRJs9(9sRs9J9
+        TJsR*%c9'    F	F
+        
+        Y	  
+        ǲ<L4-I4QETUK4MMQ5Uei(.M4Q4MUu]yTWLSU]W          	 @6pR4XhJ    1!d
+        BB)  0  `B(4d% 
+          sIIB1 RcA(1 RkQcA(%֢k!RJEB(%ZRTJjTZ1JsJcRZ(t2c9d1Z
+         @hp  ;auBCV y  BJ1c!c1R1T1
+        cBc1!d1眃2cAs1 9ǘsBc9s1    E6'	*4d%   Øs9
+        ! tB*T9sJIx:)!RJ*sJ	Z+.RJ(R1RJ)%֊1RJV1TRJ)bZkcl,%Zkck)cc\Kk,{j-Xc1[j)\
+         0yp JqBCV  BJ1Ƙc9sIs9 B!J1sA!B(s9!B!PRsB!B!9 B!BJsA!B!R!B!B)B!B!RJ)B%J%R
+        !B)RBI)BPJ)RJ)B(PJ)%RJ%RJ)%PJJ)J(PJ)RJ)RJ)%RJ	)RJRJ)RRJ)R)RJ)RJ)RJ)JI)RJPJ)RRJ)J
+        RJ)    #*-N3<G2L@ R  B(RJ)5QJ)R
+        RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ>6pR4XhJ    01Ƙr9s9H) tNJ)=Bz!B))C(!R뱆N:k!Zj
+        2(R=PRj){K%ZkK*)z9RL- ` `'Ec b  C
+        BH)RJ)c1c1c1c1 	  V+j'tfdȥTD#5b%ء`!+ 2  Q5^+bj,
+        AAe($)XSȔRY%tL)F)BƔc)tZ=TJ
+            @P`   CpK(0(
+        I
+         @"3D"b1HL `q! 246.. tqׁ P@N7<':      x  H6hf8:<>@BDFHJLNPRT      >   "9  @     @         OggS  @a      gK   *"wr|wFp˰ 
+          
+        Vfp7ҕQ,[E
+        epf:EJ)&F3(bc:h:r
+        -~1u`cuؚ
+        KYưfLՁ@
+        
+        9
+        % =3?Csч-~ܪH)EY$mQCeeE((Ed "H3A*
+        6L"&ER]-`;ig -Uׁ  |]\;+>VJ\\0VkJX[渪+e
+        E`&v"@"K"(^+W㏒2F(bdH4
+        
+        @&F t K:_L
+        
+         eC^K
+        UKCݸ8w]~I]X_(z(!|Jw
+        -
+         ;5RY
+        8K+-pM  L4=
+         Q0 ` ,@ g>ο*Wzo1:VxśA)
+         F?u 
+        v!^ #k&
+        	 )
+          g @
+        x2 (
+         	  Xe
+        ]֧*))r	8-J&b@O+[JA 03<C:ڌPB.
+            u  :
+        4px' _~q;ŕjXwp:{^
+        q:N\t:un=t:++	 UQ3Lַ_~Dή
+        p\l  SRFh
+         GeoF/#ɕXw~ç`$9"+ T i 
+        v
+          6% J @u P    
+        R1~&TQ  膛dAD  42,  3  q          "Z[0\     xd  " ~HeG.zD\j0-~FI
+           T_  
+          _  2 D5      (  ݵ ӑO  vB  
+                 $    1ů
+        L k8Dj`@ "*朩?"   |"  ^'Ge_9GpNw~}ć]HBz% B 	`YF 䨈J @H(   d j     *PBF p  @^5GnA   Z̈́          Kew    Un     G &
+        _!vhNx{ u>жm۶m(P	m +
+        B
+         @Z4
+        `.    ,ps9&U[ PT\L@8BB  |z/躮:%%a ˴!B A9.
+          (1D&PB!%~6
+        ;1
+        s̡mm
+        x<
+        q[嘿2 @D8x~q¢#.WM  4DNa
+        at: :JS3111111=cuY`{bbb"N
+        
+        
+        
+          55NF`BӅZA31ibb"BGGGGG4=    # ӁNӦMN ȼOOsSA
+        ]9?D?낡,9麮n: 5j% 2 E5 gE
+         d 2#'l/2 "(  MP; L  
+         
+           e3ʼB205J(R
+        B
+        DE<XeXB	
+        .$S	 #Ŏ   Lф1
+        E	ǂPB	ebN$ '"+
+        $L) = PxA3`   C   cc5FaX
+           0vְ5aV	й:~zD
+        0 HQV[	 HD
+        < >V[	ˀ  l; >}UxH'ٯٯ#Kϙ8+ `
+          d ,^  (?įd  @  f     *P@(      1(t	J  )ǟU
+        (           WªLM   Q'dt `
+          x
+            1     >t
+        _wtKf&|rLjY r"a'E !K @by
+          6v (   (H(ឡ"(    (<   FW.*   0</    \W  P,   (} :)   V  
+         h 
+        |urbĭ9}2~@NPV @:  0؉ P~
+        	 8  i    ՌYZ'f    
+         Є1   @,|     Y  P*?yjfNB    f6#hjYD     1  0
+         ! D 
+        }L?NR>r
+        )m;x	DŪ   l>wo  ` @] !       (uR]   \   
+        3:L1   `K   ન    >@ p1  @(`p* ~~2'jB@/U%  
+        v    H D
+              PT,k Xr   @=s(o        X
+        
+          -    ]?sg     @Q~@ >\
+        OWS*?Pӿ{ʢBUs 2>{{I  x `G{   P
+        D
+                8D+    c֊    (Lw:  r   
+           S W
+        .> 
+         >{v
+        f?~d+?g*g"@ @ަ~ `k9|  ;  0H    Ȝ  $/   r&Z   )"_(     v    @D  {]n
+        	   |,TB  
+        znq*7b0~rn. 4cr	 `x  YSu   H"	    v  
+        y
+        
+        ~"?    _=   @4	   H   
+        }G  k 
+          R@BQ?>Pi |WqNg@l)Nހ5  
+        6 `UU  (?T
+          H"	    
+         Poabd    Vw@
+           (X   L3   F5f&r   š {ի^o
+        p/f#rg	_O\TfGRM}"
+          \1  ldL
+         Á2
+        D    <0Q   i7Gm(    R    
+        ޣ`   yR% @t   	PZrV  .}7}_rBw rߦ5W,?S `/2 -kx:   P
+         @$   A   Mc8   P   HI    m0&wMۃE~D2   , *
+         (|Wo}*~(o|
+        +*( /;
+        ܱϚޥoSmL
+        g  0شp   8
+         4$I$   q.-    g&y
+            +
+        Q+    /   @}/U~Jx
+        SG	   8
+        
+        PTV)@>UTO(u*
+        ⣀
+        | ޶
+        ~ .U>k_.gS?W@P^)  $  l8*  P~ $    Р   `/m    \2     nB   /0b`hvƶ߲CWHZ   ?
+        8|*-u-=tac?=>o(~o<U(> OggS  @      gK   Y· #!6279/wH)SYs_JT?&{I% 0t  O K    td)    ̅:   Dpz
+               |
+        jl pvlwT   ~/\WGUP.
+        *RߪP*Wrq/ l_Ly
+        pW|^?
+        :  09  
+         
+        %    P w)    X5    @xf(   /䷔^
+        '"˥ߌA   	,N
+            //`6Xx{+{X
+        J}>UG.P ~ob9$f<j*ӿG^Z)  ;# @e|
+         
+        : M$   0饆W    c#   r    +   @)?y/r
+        H    ~Uz~)'dDJ@~)Oζz+
+        ]PAE
+         >}?i%+
+        i_*QLPn  l]
+          z1 H+X K,	       ,
+           .Z   l@" DW} 
+        !a[9n7KmEbʉT   _ 7j/^( xT;EU
+        
+        Hy
+         
+        f").Q\#.ܟ,l
+        Y= ` @k
+         Ґv$   PpD    ȯ     C8    vs `
+        V{qoG0   xT\
+        onhР)\~Z~74 W~pWy_ި=^~W޽Ձ!^>wQJU}?G"BϗɊ"9~%\=س	  צM @j%"
+         3]ZXI   y0   vI   @w:   "Z@
+        Gw5^3mmbز
+        ̶HK#Qq#,    '|>GWl5PC[
+        ŷzXծǂZP
+        f~@CR'wOSyxu pIuէ7O.~P.}(5~~E
+        	)93_?v*%r5{9  l ZaMZ3$I  P#        S&	 dz 
+        `Bqy/o7|V   
+        KzK~QϥT f3}ߘi`	 >w\
+        /ʂ?T+KOܷou*>
+        
+        PpO
+        T5}?󫡅~@\
+        ?'ڹe:؋   W; Mڙ~@ D@  h-
+           r    N}  Td`?gxgǏ92.	5Z    `ځT*	 MccK7/=-FJy}u
+        
+        <Yioꗢr'\p
+        #x *o*n)ɒ
+        `j/ʴ~nwZUq]
+         ~5}H.dBJo̯HIql0Q" <p st. $D   vG     ޒ    
+        @y<-&^wL93?6    *_x00 
+        ǫ{Zff{ F-_H9jVr+V:  0߼]>?@ڜ	Hw~a_|}g}*
+        5~?f]v62kHq©	;P``  `0L+
+        l
+        $I  ;
+        C    @Ճ      rS @~P ! Q5.pg3]vFʳ  X\Tߐ/>=U존
+        jmu
+        9&u0;f&5M50PpeȊw|ŎvZQRt
+        GRaRͨ>( p5~?,KZY2
+        -;jLd<vvu  p \.]@)$  v(
+            s3#	     
+        4  ++<^
+        6
+        d?nW>W
+            zjy
+        j)'uf5
+        }iޘ Ghcl<
+        [G5
+        4Z y8{ /S"bǂ
+        MtuH(Qb]
+        [?IK
+        /p.5
+        >o|Dːٟȿ6)LCDK=  $
+         IĦ5I2I   $'
+           
+             *U'@
+        
+        &Ιid^k?=r_?Ɓ|ߗB
+            مK'9?
+        _VY 0woVR}{4
+        |ғ&?,KH:S >my/w#X@;  ap_ʝpLJx+粑~H6RK(zV=rq~
+         5
+        ｳ?2!?ɯL-KЃ">@
+         XM
+        t
+        Ŭ@   <p3ko7Ytk    La2  @  "^sqV    `f3֮9o{k}M}j	rv
+        Ir:_,~?igFʋ4O{
+        >[)([TWPx}={Rn8ʛYp}
+        ٛt
+        x|DRb~|5T>
+        
+        >c/^( ` I ꤝ
+         I&   |Vby:&dz!   \
+           +;  V#.=DU:ny     ko'y~[;33C&oKǟM[BLoL~Ltek:07g;c?\d
+        y_d-JBmr4G =R~xPTW-p/WTB`ˋZ)M)TK UO@Zÿ*5T??OuP{#0cŽߝ>zL$  Fבn  )  @l\|YGo
+        MQ   Q]A i  
+         +l <V>
+        EO̺?X     (|4[ ~ꄿ'
+        ǜ{p5l@=X9modG@.e aӽY"h;3a9o}
+        g
+        X?QqvIIoUw;>+;
+        noZ<>h  -H"~5?D YOz?{2 nG
+          XmFp8 	  Ѫ;4Uݻ<۫     
+        }~pV  ųcZ޻}ye]4sKg     /T@ T0?ʟ㈿?=>D c,Z%d{̝U
+        k <sq?͡){szn';{<egsƎr:m+
+        }g\/ |Պ'nn)  
+        6]r`ݗf. vܨ <d:( 5$?7<Op&r06~/jݡ h̸<Dd  mꦪyՐ    /!uH  {ء 
+        ( I	sCw2=χ`     sQ
+        P
+        P\
+        Z7y{\9oKRemy׿PͲ6wMOdLPzh;7f4ꎣ~]\&!Jp-<_KReJ+22
+        @OR^nJ9Y/4
+        `EU.z\ OggS D      gK   Z:
+        )k}5$/Qtd
+        3O~3<
+        V> 8Se&ʬc6	  uMB	̟3X#wVn"6    "c!m>-gT   p* @Zz{?;'w
+        ND
+        /i0ͦŭou
+        5bu`#^uuNO*@*ʈU%.L׹ޯyiy<lxK,iɻH
+        >^OySvdO[X
+        	R):Q]=-%CY
+        1ywN}yN)[67
+         y:?;  2B&n.
+        xU{K ^5'ǅᰟ\'?Mi
+        
+        '7&W:3f
+         I$    V"=ťܾ]8Ur˚[m/Kt	+afx:6`3g777۷*s.U^gJu(
+        C&L G7C7C7C7SkK+t.gE9e}q{SxK52Jūq,_$}Ks=u!/_hgwF$##gBl.s
+        S6kr@ <#߼[,s0`8S^٬Uguݺeb?/#]`xWeRs岷2$ss'ܧ
+        
+        --- End of File ---
+      swoosh.ogg
+        --- File Content ---
+        OggS         j@Zp    IG>
+        vorbis    D            OggS          j@Zp   !j=qvorbis-   Xiph.Org libVorbis I 20101101 (Schaufenugget)    vorbis+BCV    1L ŀАU    `$)fI)(yHI)0c1c1c 4d   (	Ij9g'r9iN8 Q9	&cnkn)%
+        Y   @H!RH!b!b!
+        r!r
+        *
+        2 L2餓N:騣:(B
+        -JL1Vc]|s9s9s	BCV    BdB!R)r
+        2ȀАU        GI˱
+        $O,Q53ESTMUUUUu]Wvevuv}Y[}Y[؅]aaaa}}} 4d   #9)"9 d    	")Ifjihm˲,˲
+                iiiiiiifYeYeYeYeYeYeYeYeYeYeYeYeY@h* @ @q
+        q$ER$r,
+        Y    @R,r4Gs4s<s<GtDɔLL
+        Y        @1
+        q
+        $OR-r5Ws=sMu]WUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUАU    !fj3a 4d    C
+        
+        Y     К9堩T's9ls)ʙŠКsI
+        КsyҚsasiҚXsYК樹sΉ'Ts9s9sΩ^9sΉڛk	]sd	s9s9s	BCV @  aƝ }b!!
+        t1)
+        FJPR'tАU     RH!RH!RH!b!r
+        **(2,2ˬ:C
+        1J,5Vcs9HkZ+RJ) 4d   @ dARH!r)
+        
+        Y      $
+        
+        
+        
+        
+        
+        Q%Q%2-S3=UTUWvmYu۷]u}׍_eYeYeYeYeYe	BCV     B!RH!b1ǜNB	АU        GqǑ
+        ɑ$K$M,4O4EQ4MS]ueS6]5eUeveٶe[}Y}}}}}u 4d   #9")"9H d   (8#I$Y&yg驢
+                h爎(ilʮ뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮@h* @ @Gr$Gr$ER$Er$
+        Y    1
+        CR$ǲ,M4O4=3=UtE
+        Y        
+        K
+        $QR-R5R-UT=UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU4M4А    )ŚPANJEi )؋BQP*d
+        @1bcB̋sA/ƸRB(BCV Q  I"I$I4H$#<$z<Ix
+         Iy
+        ϓD<    B!+8 $y
+        I<y4M!"3MfLSU"3M'LSU(*Uu]d۶a˞(*Uu]lٶ!   $OSMf44jBU%3Uf44BU=St]Lu,C=t]Lu,C  H44iiESjJ44iiEUzLureY-{Lu]Y,  LӖEe
+        LS+Ee
+        UՖ-SUY溲
+        YUUlSUY溲
+        Y        MUej2וeȲMUe2׵eȲ    @!+(  X"Ǳ,MMcYf$I<4Yg4QTUh(*    
+        
+          lДX
+        А @H q,K<DQ4MX牢(i*Ǳ,EQ4MTUi'h4EQ4MUUUh(i.4MM4UUU]yh꺮
+        <OMSU]u                  
+        8  A'Ua	
+        BCV Q  11ŘQ
+        B)%4JA	%
+        BiIH2)Z%ZˠZkZk   
+        А @
+          R9
+        5F)Ɯsc9GR9 *ŜsRJs9(9sRs9J9
+        TJsR*%c9'    F	F
+        
+        Y	  
+        ǲ<L4-I4QETUK4MMQ5Uei(.M4Q4MUu]yTWLSU]W          	 @6pR4XhJ    1!d
+        BB)  0  `B(4d% 
+          sIIB1 RcA(1 RkQcA(%֢k!RJEB(%ZRTJjTZ1JsJcRZ(t2c9d1Z
+         @hp  ;auBCV y  BJ1c!c1R1T1
+        cBc1!d1眃2cAs1 9ǘsBc9s1    E6'	*4d%   Øs9
+        ! tB*T9sJIx:)!RJ*sJ	Z+.RJ(R1RJ)%֊1RJV1TRJ)bZkcl,%Zkck)cc\Kk,{j-Xc1[j)\
+         0yp JqBCV  BJ1Ƙc9sIs9 B!J1sA!B(s9!B!PRsB!B!9 B!BJsA!B!R!B!B)B!B!RJ)B%J%R
+        !B)RBI)BPJ)RJ)B(PJ)%RJ%RJ)%PJJ)J(PJ)RJ)RJ)%RJ	)RJRJ)RRJ)R)RJ)RJ)RJ)JI)RJPJ)RRJ)J
+        RJ)    #*-N3<G2L@ R  B(RJ)5QJ)R
+        RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ)RJ>6pR4XhJ    01Ƙr9s9H) tNJ)=Bz!B))C(!R뱆N:k!Zj
+        2(R=PRj){K%ZkK*)z9RL- ` `'Ec b  C
+        BH)RJ)c1c1c1c1 	  V+j'tfdȥTD#5b%ء`!+ 2  Q5^+bj,
+        AAe($)XSȔRY%tL)F)BƔc)tZ=TJ
+            @P`   CpK(0(
+        I
+         @"3D"b1HL `q! 246.. tqׁ P@N7<':      x  H6hf8:<>@BDFHJLNPRT      >   "9  @     @         OggS  @.      j@Zp   cSFiQKC]\DASfy`DnBS18.SV*iR`#=XhX.Zqͬ#<=wX<o8+nbց t0zjVFTX)eYYB$\X,%
+          
+        P$
+        ۪hZO
+        H
+        
+        S45	/?VOUeqU\Y;3
+        :tH
+        p]é:N㴟o
+        1arQOu:~n
+        9C(񔄇 21=Bdx
+        ĭ#X^#y
+        j`#LIpBg
+        wL= ٙMAn5Eka&ژF+uM{L0њ(
+        3&CWL#
+        i
+        
+         LS}޾) naȼ^ <邂 !^@  ~tia
+        9!Х=*DG&b]UnDI,bH   rbt9*Eh,.PGp
+        :qHULc^zJxd^$O3
+        FRPo
+        YpGx1.~T, Gꐄ:
+        Ospk\9fH&8<@%8&39xdb&233d
+        T{"}dNPX0ƉG+\ YaC
+        $8ژDF1:ODu-~L
+        #X:VhFGO"h	!t tZ?v8{03a	w
+        A
+        sC&f&Mh,i
+        bk  
+        dވK b
+        ۥ*
+        )  O@8*JB/*$H 5l09
+        (S
+        FtCfNjPćEo\<
+        9
+        
+        ׃AȔPdu
+        sP.<ż30:$z7ȑ	˷~
+        m	 #֏
+        D^
+        Xd1SPc\:Fቡ idC(%zl
+        FPFFnE"^03 dFe00>
+         h
+        	 A@QaFA
+        F`BHƬvobG58M7ّ&=a<3x
+          
+        $=
+        DbU
+        AKKn
+        ij:ӭffH  0(1 B (/*%F1@Μt&j1OՇo^0D,j/jq$	3
+        0 !a5z$dq
+        qcy$#
+        f 
+         DhĎF
+        `pDx%br0!v;:Bds=/!0y
+        0:0N
+        cB"`$
+        Ld*n1&@
+        ϕ;ׅ6ۘ`Z3F4@
+        au
+        E(Oat>318M$:+ ag *m i`ң^#4iEa7*2*d"st
+        F&*K$   H.$sc-"
+        Q"0#B@rBk+O
+        A53
+        e{]kiV3&ɖݱTU;<mB
+        
+        !89rx
+        f
+        DPE20a#!Ztz:F# #BOCEX@
+         V#كjE@)2 Cfu]3pMk<$u}BA
+        s`z8.I7ݦ6&ZlzHc Cyt8nwbo~_gBF7:
+        pz!a":F7L49D  tttWJt z6Z ^;]jQ;]jqjw]2ETPRQSS\qd̪H  r
+        4-*F  B:EQ
+        Q0s亮t$Qi +I[{	NuaX
+        >2#p03p*Z
+        q" .yM
+        
+        +4!#>]3@IZ 
+        f&!$0٢wY$kȑ EaJ If`^' 0@XH@-ƥt
+        @RGn3hx
+        
+        oQ0&"'ṡ0:D!lMא!k 54TG".^gːީ
+        %NF3z bd ~1&íwǌw-5QQ!$sN,13KL  4HH)dIHE)/%L6N;!Sw@QYǋ0:xt`
+        "G\s
+        z\
+        $p%<rIH&s5<t#t.G0`
+        gP'#C4eL
+        
+        5׃\
+        |J$$	#
+         9HpE0`tzĠ
+        #0:
+        u 1ZoDa"DDP!*pN00
+        vh
+        )
+        R2@
+        Ձdc
+        M-B'8M ~ % % p5+J5
+        QcN۩8.ؘI   %D!DR(.&B@	MQD	
+        Db
+        u<q0d5yp
+        I~8ED
+        
+        y0.Ʃ:gH
+        @\ЈHFB #D BO2}!}$@[ "9 MuLb`$
+        
+         iPFqFF=
+        F
+        0tЁhD
+        B	
+        %N=  &ݎDEhmp:JwLm	Qzza&\z0 ^^ @6[z5 eGaRG-F,  OY#"(˱)J,BUx=CV{Zb:bckogg(VL1,ia.%1K W7
+        0Cgј>8)
+        	0
+        ׋k
+        ,Z!ht!CF\F0/\CraeW^y$GDD$CtiE"x0XLy
+        O@&[[pCO(`ak"֧9	-(u Ma0 h
+        
+        h:
+        $ @<#baD@"Y`9:0tl6$3/#@HÂ	 ~+q< `t+i< 
+        5UWTTΝ*K,1NK   ,=	BH`/ƩZ|p܁i	~
+        8ꪍ`
+        4<tB\&5<Mf sdzB#}$&1#)Ԣ^ 8E
+        udy`0ua,:$cB8B.D Ld=0gg00
+        "[ddbZha,HDUOBN0B{ ."BdĎ8LLu\>25ĉa"Ad#w
+         ' Ftz "-
+        B%8 2
+        !aWrLȃd<(C#g(
+          >K
+        <t(TȣYH=
+        (*0XQEPsՕZN\Q
+          @Y[@TWIqP4܅A4uu|:QPiŐ.~G&B\Cf<	s$:
+        s }X\L RVx.^"ZP:rq\w#E{
+        0FgQu"L(BaAFBBT8G 3 0<!6b#?[c~O8tRo
+        ɩ#QXC DXHKvyC=NK',R0dVLATo#@ @G&	1a:#,ƁAw0\ ]`%  z-tDF/^
+        ۦ<KoHm
+        r;9NڵKLc  rɖM%<>g	 b <i1/Ic11⮼2$dcԒ
+        p]G&&̇
+        `%AzJBiA=-!:LGD&溮ȭHD
+        V&/ 9BAוcwd8NB0 7 p]G
+        	 :8qW.pCXa<ԘH&NZ?E@g[P'`(! "L "H 
+        ^
+        
+        Ph|  2\L`
+        8uPnX OggS  @b      j@Zp   Q3b]SFLQc^OLCKL
+        
+        㶀VAWR
+        oPT# 3,"㒸va"5   
+        J.pc\GDh¡(Be($ɔ^Gx.>=)O
+         CrB^\ǃ$
+        Jru=91CB0b]-
+        a
+        #:Gr%DOw8S a T@<K
+        JdEx
+        d`8^\Ǆy
+        otNj  b@B2'#6(@C M	&F
+        :I0.~@a4cD&b"&2qX
+        )\/H Hx
+         
+        2Ŝ0   
+        k6"+ :m		Q]3(S`C%E99cEfb   e'@IYxNΓbn,"e
+        p./""šu<
+        cr`pex9$^!f9#;b0DgP0xW1
+        C}xCLt;B@N!
+        
+        e>b(rLu
+        
+        RPCG. 
+        	Jc$092TG$s=B 1#/LDP+D
+        ƈ:h
+        
+        b
+        	$B'p"`Z
+        1
+        rzW.颌^r48nG;MXŀg?:"IB2aB
+        @ND"  
+        Jn[$k`BoX7TTTSa)6vX1,
+           BWa
+        7AA3h ]!V
+        耈\!!z<c̩tk0D&a+^p&9qM!3
+        s% .b"S'(.jt(!^xYt#HE00=pz	O	Lf0\$
+        y=
+        s
+        9^a"
+        ;;!P@wN={! n_
+        
+        1 F
+        ~6ĉB]NS
+        
+        Du`
+        utC!PxΉ#,0ubLf>e  ~
+        -(`Uc)4#
+        AY,CD(+X\X\   0gRL)2%K)bFEZl
+        W{3X.p\\8(
+        ǐ똃WHHf
+        $!!|DDh
+        sL
+        z7z0qFGf\."񠑡'Ctȸ2-aĎa30G1P
+        uE Dtz2@	p
+        F=#c@0N
+        	\
+         m
+        1C1A
+        h]5m1D__
+        BEQ 
+        Pߡ
+        ?tm"A$NO
+        9
+        CzR ~h"SeLGDK
+        !8%RdE	tr+cff#  ,`q!)0
+        !&BXXl
+        I	U1qbZ-*v
+        
+        
+        א	c.].j"RC4$t0`ts!z	ݡ.rdޕ
+        xNz=ZN
+        N
+        
+        <wQ=2,H04@ª9z
+        t^Fxꍞ3RX	,F!
+        .Bf.`1ᑙxBzt:B)
+        Du'(. =#< vNO:CǠuZЏc	:9"G!CN >4h4 ChRi(@oQ2@T*
+        3LJQ
+          PQHϣ\%NQb";%YeAE(JTD<4mߴD0@|`&PDf 
+        9ȋ58#C>\a\
+        8:2+\,B{udcG @&8`
+        I'w\tX|`KxX
+        WFDPi,?tc
+        Fs
+        0Gwr
+        s"PD |°	P,j!>R
+        cD!2 0F
+        A=ch0A/iA_kE
+        @i]
+        z#
+        k
+        
+        2LdO lb/@!KLqwdYC:IUy!+2
+        $Ι),q(   Tt_
+        `ܩ&h`b
+        wJUjnr)
+        ,5q"&q k0!d
+        fhG-!:IPb5
+        5U88^
+        +)
+        Yt>}uKqƥcN]h#V>PFP 
+        ב
+        
+        htageXtR0~&`(&6n!p{(JО6Zt^bCמ@
+        pa  CA\#h+4a->8Aa EAMQg#Ѣ	G  >	t`9
+        rt	vciC+z'..H)   XS7Oa R-uU	$.j=܈W؛S
+        QG^\@k^8̋pM@V.` 
+        @^
+        W&W^LCgu
+        Nr W&,к-tA9&
+        5r#ɑ3ԇwOt9"142-LB᝔.2
+        øt#H$
+         
+        pFESa xF"э
+        CkmB?C4.#P ! `
+        ttD&u1!@7LTC=
+        \!V  bB5x<L
+        
+          x
+        
+         rFkpA
+        {X؎*W	   ΐ.v:q
+        ĝpRqv<	帮c~W#CBH2p7H.E\\W>qq4p0EU33\Ū".
+        '0F
+        t
+        -P
+        s
+        c\FzFqw d昙S
+        afraAt
+        `k@$ޠF
+        OPzPo
+         z;B
+        Qa0І,?o&@
+        
+        " 
+        % h0 '@a4
+        z[  F1(
+        އ }sR  ʒr#И#B@>HkcK;WU)3$'  @A )
+        <řAWK\	D"
+        R0qPd: 
+        
+        92y\8 =(#3(
+        
+        
+        BC0
+        #Ôk8&b~Q	+P"Bi^mafr!cxb-2XC]r
+        S`>\
+        "-1f	c qHBuz#
+        30NzmC#Lt
+        D⍓
+        uA_Zצ֥g0!t{~!ǘ@O"Z
+        gxO,
+        d Pu`BCu
+           4xBN|xBNtN`6'6ݕ$fb6SB  H2-
+        .1I&4t`cwELBdwJZ.5k^\s]squ53HJ Ok8Õ+^\
+        @`&
+        z
+        KX)"" +40zޣ"&"|pE뜀Gh0B \!L(:M"( p00 rx CJӉ 
+        P6 ]0.늝К
+        3z;o#{)
+        e}GF	0@RhC ]d}
+        NJ,X:_Ti >dR
+        !1F
+        9	BQ!32dU2ՙs⒤Ӧ$NQ
+          @,
+        WDk$Wj	i
+        RxD0JJpEEX!&vj*:'ԇ`u4!.уF'	L ׁ:@E@
+        E0Y[H=ջuN
+        RNVI)
+        qmpǘ<p.1ˈЁ0PL.`&3
+        	:&(uıUK8D
+        "9P'qDai#FJ71
+        t Lأ-C.~De;x DaS5$\GNg $"  
+        :< 
+        CNp
+        ""ȨYfY
+        JT.Sǔ
+          `CIȍ``!% &VZ!@)w=8&a*<&c` CE=u
+        0Ta&kr(pFI8	u2
+        (5C HǑ
+        .~H}uyNf_r
+        W~
+        030ٵNB{0)1C~LfiH,2<Z-$
+        [Fv0 TA' ?ꘘt<1zG^QC=%:xyD AGcЍ
+        
+        R] @$
+        H  ]# OggS X     j@Zp   eaAGga^ĥ@f11)qH,&H2#EX݁RT"$:&  D#) 
+        
+        B#h- 
+        DiZH"
+        BB3>A
+        ס^TNlDEQ"z
+        q\y
+        Eu.u"W
+        s#5
+        38r0:
+        :J$|H 
+        0Dr䂋h>
+        <be0>阎Pwc$e
+        p`x
+        d Ю7T: 
+        g# 
+        qƣLL03 0H1Q.  P	aztH
+         0`H  5 `LP
+        gHz IAі
+        
+        3CJirq`
+        up̞]U36r   h"qh7EerQ1ZEi,qa
+        {g!h2
+        s
+        LF)뀙
+        ^L8H^
+        y
+        !WGx 
+        +ÄzS >|7-;Sj8g0pA 8N$ׄ0=!3<\X! 
+        ;\$ v&6CF6RC
+        9$x
+        &}a<#PbmᴘPOtuF7Db31M1M%@1ncsbD"~$ pH1 1C¬+
+        0Ãjk  ~5<7vBr5<c$e2:W
+        ]:mIBgI"%  JezN* "NҵpIA/Efjc3Sct3);NvTJ_: \9.
+        <z:rC2:{"̪zpzS"zO
+        f%XFqqܩ9Vz:C0g:
+        \GUUPa\øHwA^gѓX}v
+        3v"z_@.v:Q`{cG"Q0A_
+        ``1Zǭ-[
+        V	Chbjy	ch#tc0tOD|bM#t(-b0B0 {
+        3 
+        --- End of File ---
+      wing.ogg
+        --- File Content ---
+        OggS         L~A    Vm0
+        vorbis    D           OggS          L~A   M=vorbis-   Xiph.Org libVorbis I 20101101 (Schaufenugget)    vorbis)BCV    1L ŀАU    `$)fI)(yHI)0c1c1c 4d   (	Ij9g'r9iN8 Q9	&cnkn)%
+        Y   @H!RH!b!b!
+        r!r
+        *
+        2 L2餓N:騣:(B
+        -JL1Vc]|s9s9s	BCV    BdB!R)r
+        2ȀАU        GI˱
+        $O,Q53ESTMUUUUu]Wvevuv}Y[}Y[؅]aaaa}}} 4d   #9)"9 d    	")Ifjihm˲,˲
+                iiiiiiifYeYeYeYeYeYeYeYeYeYeYeYeY@h* @ @q
+        q$ER$r,
+        Y    @R,r4Gs4s<s<GtDɔLL
+        Y        @1
+        q
+        $OR-r5Ws=sMu]WUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUАU    !fj3a 4d    C
+        
+        Y     К9堩T's9ls)ʙŠКsI
+        КsyҚsasiҚXsYК樹sΉ'Ts9s9sΩ^9sΉڛk	]sd	s9s9s	BCV @  aƝ }b!!
+        t1)
+        FJPR'tАU     RH!RH!RH!b!r
+        **(2,2ˬ:C
+        1J,5Vcs9HkZ+RJ) 4d   @ dARH!r)
+        
+        Y      $
+        
+        
+        
+        
+        
+        Q%Q%2-S3=UTUWvmYu۷]u}׍_eYeYeYeYeYe	BCV     B!RH!b1ǜNB	АU        GqǑ
+        ɑ$K$M,4O4EQ4MS]ueS6]5eUeveٶe[}Y}}}}}u 4d   #9")"9H d   (8#I$Y&yg驢
+                h爎(ilʮ뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮뺮@h* @ @Gr$Gr$ER$Er$
+        Y    1
+        CR$ǲ,M4O4=3=UtE
+        Y        
+        K
+        $QR-R5R-UT=UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU4M4А    C=|Ko=h
+        1`A
+        CItIJ9h9
+        1cq1GBǠQBCV Q  11rIɠD1	9'I)-3)%c䜣IɤKc     
+        А@  b
+        R
+        )R)R1
+        RJ9S9
+        1)
+        S)
+        A圃A(     B(4dE ' 
+        ϓ4K%KEOeMW45QTUUTUMU%MMKTUEUUӖMUe4eTU]Uնe~W}3MUMյuז}]m]445QTUMUtU6Uն5QtUQUeYTUYVeUW}KUSMUUUmUutU[WeYVY~]}nnHf(&jmkۖ(왪++۾&+,*˪,*.n,+uT]]WeUY}uaLӶMWuSu}um_8FU}Uae}UUMvU_vg}_)6}/
+        
+        nnW)3<=ӔmSUut]ݷu[m]g,UW*EU}U}_ec}xvaɵma}
+        ֕ѵm}_i6w:e   @	eА@  s)b:)uR9'%cJ(%Jjc2$dI	%JiR(PJkSj1vR
+        Ji-[j-ƈ1cR2椄RZ
+        9'sR!RR*ƤdQ
+        TRZ(RR%[kk
+        Jcjcc2ǤdI	JIbLJ
+        AI%JI)fI AG[I)PJk%B)-jMJicI%Z-;)RZ
+        Z1k(R%[5k
+        RbbͩSkk
+        k9cjbͭb͹wR
+        Ji-Vcj-PJk%BI-jm-JicI)[-ZSJ1jMZkrj-cͩZc{,  `  2PhJ  
+          D)49
+        !朣T9* Z眄b
+        Z%bZ  P  `    cb
+        BRAh
+        R9R9'%R1d9'!9研B(%BZ    6hJ,PhȊ  
+          01C1)A&%8)u2JcFVbsBJci1Tb
+          v  v`!  @Q131ss9c9s1Ɯs9sA!s9 9
+        BsB!t9!:眃B  8  (9HP!+<  PJcJIQ1T9ZPJJuJI;Zb1PJK-Xsj-s9c5\   ؁"  @R1C
+        1Ƙc!c1c9sJ1Ƙs9Ƙs9
+        c9s1s9ǜs9c9s1s9  8  (9HP!+p  8s97bZk5rPkZkZkZkMZkZkZkZkZkZkZkZkZkZkZkZkZkZkZkZkZkZkZkZkZ o3$   aA砃BÔsB! B)A'%RRJ)A))RJuRRj-ZRK)Z
+        TRjb Rkc(%Z1C))Z1XJic1RRJc1ZcZl1c p78 @$8JYhp!+  !Ɯs9
+        )Řs9!"s9 BƘsA!Bs9!BsA!Bs9!B!tA!B!9!B!A!B!:!B!B!B!PJ!B!B(!B!B(!B!B	B!RJ(B!PJ(%R   @tQe6p(4d% @ @5kdrJ%BJ9)J) 3RjSJ1)9QRK%Ai9;    @ 
+        
+        d B PX`.r	c9 BdHD,	@Q1
+         ,.0@Ft.:B 
+        H	7<'R        
+        GHI	J       @DDD3"2BRbr                 OggS 
+        7      L~A   #p)+)*)*LMKl|\j#_ ǺxE,l
+        +~
+        ~xRJ h+ 2>s<uO_[8uKCb&z  HRȴ?n+hFcZd{֠dg
+        wL
+         ")[U %)\
+        (i|9a2qCF,48`|/HIɚRd
+        YUۺ/ߣ2 D 0~$£8<󧹰twSocS=W/gź
+        3	I.v1iƢA
+        1mָOʲ፳]
+        ?>,l-֭;
+        j{NI+n?a3M澏
+        g9=/71|S[9<iyjyLGpX]>Tv}M>!4w,/g_9IdUZ{}cgp56J
+        }2}9Xn
+        
+        z\,ٵ>
+        {h$lM av
+         ,{/!")0JȤ+OVү}_U׷ܴ|'RW)Sb
+        We̮YOj8
+        Rf*aYv4u35G
+        gn.J!0k&6MyO	_ͣz5w$t~l$̹QӜr#,4SZA]yk`>pI=]*PuQ>Cٷ ~Y%*țIA"zas
+        9[Bϸ$uuq|zSǡԜ'~mzp3qTZZE0G{Sꬿ8a[,;\L
+        K]MI΢[6VY@dω	 MWj#so89Q
+        JK~VHQm&tJqWH)Sëʧ]M%pev
+        `$ E}qV:&o~	Ea"-~@}O6*א=W	J-3M;6In8_txhY
+        &y?n`+vDb靡jr
+        
+        '9z8&<ξ1Jߥ3!x|LqI}ݣڤdk
+        6ElQ;&zJ2)RsYԕzmw8\}A\kjMmn/RV`G8Ckl`2
+        \@Z?ϐ/ 	'u^Cn`sm'-Д'M	
+        Y{.{6L;oc}~h-s$
+        L)luɉ
+        R2do.NUA
+        ^n)U
+        $i
+        wl
+        `/37ؼ`娒[\
+        gui G^#DCo|
+        r6;E\$w8&C[T}^Q
+        Q)Hc'<y
+        .xvJTHi&
+        1}O7
+        Hzu ${eS,F.9	{銤)[
+        !.N%fb ۧ3&7hQ:7c⺎<jTΨ0w8lq:\*yxqrӬôbAWens2)B;Ii~nok]Lg^;B)MA
+        +&Α1
+        {`
+        |D-El+hi1	PܗVOd/d2/\9}ra`
+        (G%Y` >	jMscBo
+         
+        Y@
+        N-|s'ADN
+        7Vu#	a3UەcUyS7Zg"8D362c
+        `
+        ^4
+        l
+        IEI
+        q{$R
+        :菻#|t!]owbu`D!Xkf~|VR(f̠H:|2BV)"V*'Ή;:gbAةÿΉX<
+        ri˜"[O
+         ިVmb)p
+        p]EJ
+        O.$WWY#zܖB622t
+        -֎Y,ה$]
+        ƹ5[Hh7hH
+        $QK
+        EC?Q\$BG	v
+        bKi1Che,hQ֥
+        MH鴤
+        H~{0n7PP5ƳڵI[S
+        X (~5G#)L9DV Xd\	0	fsܔ(v
+        *Ryv
+        e
+        LO^_7W4+%'^:+@
+        SC ;
+        
+        y4ܒ\-J&1ÄK&?9y&׷uWI@6P)*UTHv+huT@
+        O
+        9
+        |Dn&h2V&7j-kLK>;p^8y_PC_
+        B`c/
+        ҂r
+        X ~x,KIf17 P	DH Cg.E\%sazxu
+        e{DVi']wO4Ơ?A4jzlZDP=o:aرGn_\\xi"8ZB-+N	
+        A$<יC#Bl)<ܿ~!3
+        $M;
+        ,)kh2(C#Z6X4ucY:9ϏZ> wdvk:
+         $R*l
+        th4HuBJ<W+/^#v94;K}_\E&?݀BHpZgYlD6xѮ&,(pX8!	NWhPy}2hW
+        0:ąT+0kA#*{i	a|7mDPNB̢zk}@q}BǍ EZ
+        
+        BGt|rр7Ё$r5Yd`r{2mX@ais?6'/T_#i!TGq呙|c
+        :=<C~
+        BEǭC
+        <tL/j˚a%gV*
+        5Hus,s2[ݵr;bXqe0VJ]N@÷+]j_q&^d5khIf̅o4; kRf.bJBX >',%$$7 PDoyҔb7 2.EQm
+        =
+        nOjlicνJIEW9c<EnlӦ
+        9}JY*+bN4Y+gl{x9]įhD,QsDDŕŖZ8
+        O:+:*Pg$ǌr]@`{^2A%
+        Wnx	BWjZ9VZמ\V拖>&Z>l0Osl@eI(2
+        *3>(k;_['euP-`#
+        ,A
+        ρCVw
+        bs,!o&krH
+        #PetGIuR{zDbE GRج4/QP'
+        ko
+        3{Rd
+        7Z7mD%j/r"7he{7߷t?A~5owPΞɑ*k   ǭ6)y83AX=6yrS~)W,pHe}N##IZ
+        
+        o y 
+        --- End of File ---
+    [UI]
+      [Numbers]
