@@ -1,7 +1,7 @@
 import pyray as pr
 import random
 
-SCREEN_WIDTH = 1920
+SCREEN_WIDTH = 768
 SCREEN_HEIGHT = 1080
 
 PIP_POS_UP = 0
@@ -49,10 +49,10 @@ for i in range(0,10):
 
 #define the zoom size of each elements
 
-bird_size = 1.0
+bird_size = 2.5 
 pip_size = 1.0
 
-UI_size = 1.0
+UI_size = 2.5
 number_size = 1.0
 
 # background_size_w = 1.0
@@ -61,9 +61,9 @@ number_size = 1.0
 # base_size_w = 1.0
 # base_size_h = 1.0
 
-background_size = 1.0
+background_size = 2.7
 
-base_size = 1.0
+base_size = 2.5
 
 #define the class of bird and pip
 #bird class
@@ -107,6 +107,7 @@ def draw_the_pip (pip :MyPip):
         pr.draw_texture_ex(image_Pip, target_point, 0, pip_size, pr.WHITE)
 
 def make_new_pip (pips: list):
+    print("entered here ")
     distance_closest = SCREEN_WIDTH
     for i in pips:
         if i.PositionX < distance_closest:
@@ -115,7 +116,7 @@ def make_new_pip (pips: list):
         pos = random.randint(int(SCREEN_HEIGHT * 0.2), int(SCREEN_HEIGHT * 0.8))
         gap = random.randint(BIRD_SIZE, int(SCREEN_HEIGHT * 0.5))
         new_pip_upper = MyPip(SCREEN_WIDTH, int(pos - (gap / 2)), PIP_POS_UP)
-        new_pip_lower = MyPip(SCREEN_WIDTH, int(pos + (gap / 2)), PIP_POS_UP)
+        new_pip_lower = MyPip(SCREEN_WIDTH, int(pos + (gap / 2)), PIP_POS_DOWN)
         pips.append(new_pip_upper)
         pips.append(new_pip_lower)
 
@@ -133,7 +134,7 @@ def draw_the_UI (texture, point_x, point_y, multiper):
     pr.draw_texture_ex(texture, point, 0, multiper, pr.WHITE)
 
 def fb_initialization ():
-    global game_status, pips, temp_to_delete, score, score_real, score_prev, score_digit, fram_control
+    global game_status, pips, temp_to_delete, score, score_real, score_prev, score_digit, fram_control, bird_play
     game_status = WAITING
     pips = []
     temp_to_delete = []
@@ -144,6 +145,8 @@ def fb_initialization ():
     score_digit = []#digit of score
 
     fram_control = 0 #to control the bird animation
+
+    bird_play.positionY = int(SCREEN_HEIGHT / 2)
 
 def draw_the_score ():
     global SCREEN_HEIGHT, SCREEN_WIDTH, score_digit, number_textures, number_size
@@ -160,7 +163,7 @@ def draw_the_background():
     # draw the background in the center
 def draw_the_ground():
     global SCREEN_HEIGHT, SCREEN_WIDTH,  image_Base, base_size
-    draw_the_UI(image_Background, int(SCREEN_WIDTH/2 - image_Background.width * background_size / 2), int(SCREEN_HEIGHT * 0.8) ,background_size)
+    draw_the_UI(image_Base, int(SCREEN_WIDTH/2 - image_Base.width * base_size / 2), int(SCREEN_HEIGHT * 0.8) ,base_size)
 
 bird_play = MyBird(int(SCREEN_HEIGHT/ 2))
 
@@ -178,15 +181,19 @@ fram_control = 0 #to control the bird animation
 pr.set_target_fps(60)
 
 while not pr.window_should_close():
+    pr.begin_drawing()
+    pr.clear_background(pr.BLACK)
+    draw_the_background()
     if game_status == WAITING:
         draw_the_UI(image_Beging, int(SCREEN_WIDTH/2 - image_Beging.width * UI_size / 2), int(SCREEN_HEIGHT/2 - image_Beging.height * UI_size / 2), UI_size)
         if pr.is_key_pressed(pr.KEY_SPACE):
+            fb_initialization ()
             game_status = RUNING
     if game_status == RUNING:
         #Game Logic
         if len(pips) <= 8:
             make_new_pip (pips)
-        if pr.is_key_pressed(pr.KEY_SPACE): #don't know whether the key value is good
+        if pr.is_key_down(pr.KEY_SPACE): #don't know whether the key value is good
             bird_play.positionY = bird_play.positionY - FORCE
         else:
             bird_play.positionY = bird_play.positionY + GRAVITY
@@ -218,6 +225,9 @@ while not pr.window_should_close():
         draw_the_UI(image_Over, int(SCREEN_WIDTH/2 - image_Over.width * UI_size / 2), int(SCREEN_HEIGHT/2 - image_Over.height * UI_size / 2), UI_size)
         if pr.is_key_pressed(pr.KEY_SPACE):
             fb_initialization()
+    draw_the_ground()
+    pr.end_drawing()
+
 
 
 
