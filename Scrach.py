@@ -1,11 +1,28 @@
 import pyray as pr
+import random
 
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 
+PIP_POS_UP = 0
+PIP_POS_DOWN = 1
+
+SPEED_X = 5 #speed of pip move
+GRAVITY = 5 #speed of bird decreace
+FORCE = 3 #speed of bird decreace
+
+#for game status
+
+RUNING = 0
+WAITING = 1
+FAILED = 2
+
+BIRD_SIZE = 30
+
+
 
 # set configurations to MSAA and full screen
-pr.set_config_flags(pr.ConfigFlags.FLAG_MSAA_4X_HINT | pr.ConfigFlags.FLAG_FULLSCREEN_MODE)
+# pr.set_config_flags(pr.ConfigFlags.FLAG_MSAA_4X_HINT | pr.ConfigFlags.FLAG_FULLSCREEN_MODE)
 
 # init the window, but will be changed latter
 pr.init_window(SCREEN_WIDTH, SCREEN_HEIGHT, 'flappy bird')
@@ -42,83 +59,181 @@ background_size_h = 1.0
 base_size_w = 1.0
 base_size_h = 1.0
 
-# parameter to store the previous window size, check whether the window size is changed
+#define the class of bird and pip
+#bird class
+class MyBird:
+    def __init__(self, positionY):
+        self.positionY = positionY
 
-window_size_pre_w = 1920
-window_size_pre_h = 1080
+#pip class
+class MyPip:
+    def __init__(self, PositionX, HeadPositionY, Direction):
+        self.HeadPositionY = HeadPositionY
+        self.PositionX = PositionX
+        self.Direction = Direction
 
-# a function to renew the zoom scale for each elements when window size changed
+def hit_the_pip (bird_obj, pip_obj):
+    global game_status
+    if pip_obj.Direction == PIP_POS_UP: #upper pip
+        if bird_obj.positionY < pip_obj.HeadPositionY:
+            game_status = FAILED
+    elif pip_obj.Direction == PIP_POS_DOWN: #lower pip
+        if bird_obj.positionY > pip_obj.HeadPositionY:
+            game_status = FAILED
 
-def calculate_zoom_ratio (window_size_w, window_size_h):
-    global bird_size, pip_size, UI_size, background_size_w, background_size_h, base_size_w, base_size_h, number_size
-    global image_Background, image_Base, image_Pip, image_Beging, number_textures, bird_Fram_1 #assume that every bird and number texture are same sized
-    
-    over_all_size = min(window_size_h, window_size_w)
+def draw_the_bird (PositionY, FrameControl):
+    global bird_Fram_1, bird_Fram_2, bird_Fram_3, bird_size
+    target_point = pr.Vector2(int(SCREEN_WIDTH /2 - bird_Fram_1.width / 2 * bird_size), int(PositionY - (bird_Fram_1.height/2 * bird_size)))
+    if int(FrameControl/ 20) == 0:
+        pr.draw_texture_ex(bird_Fram_1, target_point, 0.0,  bird_size, pr.WHITE)
+    elif int(FrameControl/ 20) == 1:
+        pr.draw_texture_ex(bird_Fram_2, target_point, 0.0,  bird_size, pr.WHITE)
+    elif int(FrameControl/ 20) == 2:
+        pr.draw_texture_ex(bird_Fram_3, target_point, 0.0,  bird_size, pr.WHITE)
 
-    bird_size = 0,1 * over_all_size / min(bird_Fram_1.height, bird_Fram_1.width)
-    pip_size = 0.1 * window_size_w/ image_Pip.width
+def draw_the_pip (pip):
+    if pip.Direction == PIP_POS_UP:
+        pass
+
+def make_new_pip (pips: list):
+    distance_closest = SCREEN_WIDTH
+    for i in pips:
+        if i.PositionX < distance_closest:
+            distance_closest = i.PositionX
+    if len(pips) == 0 or distance_closest >= int(SCREEN_WIDTH/5):
+        pos = random.randint(int(SCREEN_HEIGHT * 0.2), int(SCREEN_HEIGHT * 0.8))
+        gap = random.randint(BIRD_SIZE, int(SCREEN_HEIGHT * 0.5))
+        new_pip_upper = MyPip(SCREEN_WIDTH, int(pos - (gap / 2)), PIP_POS_UP)
+        new_pip_lower = MyPip(SCREEN_WIDTH, int(pos + (gap / 2)), PIP_POS_UP)
+        pips.append(new_pip_upper)
+        pips.append(new_pip_lower)
+
+def renew_score_digit (score):
+    global score_digit
+    score_digit = []
+    score_str = str(score)
+    for i in score_str:
+        score_digit.append(int(i))
+    while len(score_digit) < 4:
+        score_digit.insert(0, 0)
+
+bird_play = MyBird(int(SCREEN_HEIGHT/ 2))
+
+game_status = WAITING
+pips = []
+temp_to_delete = []
+
+score = 0 #current score
+score_real = 0 #there are two pips...
+score_prev = 0 #score before
+score_digit = []#digit of score
+
+fram_control = 0 #to control the bird animation
 
 pr.set_target_fps(60)
 
 while not pr.window_should_close():
-    UpdatePhysics()  # Update physics system
+    if game_status == RUNING:
+        #Game Logic
+        if len(pips) <= 8:
+            make_new_pip (pips)
+        if pr.is_key_pressed(pr.KEY_SPACE): #don't know whether the key value is good
+            bird_play.positionY = bird_play.positionY - FORCE
+        else:
+            bird_play.positionY = bird_play.positionY + GRAVITY
+        draw_the_bird(bird_play.positionY, fram_control)
+        for index, pip_i in enumerate(pips):
+            pip_i.PositionX = pip_i.PositionX - SPEED_X
+            if pip_i.PositionX == int( SCREEN_WIDTH / 2): #pip overlap with bird
+                hit_the_pip(bird_play, pip_i)
+                score_real = score_real + 1
+            if pip_i.PositionX <= 0:
+                temp_to_delete.append(index)
+        for i in temp_to_delete:
+            del pips[i]
+        temp_to_delete = []
+        score = int(score_real /2)
+        if score != score_prev:
+            renew_score_digit(score)
+            score_prev = score
+        if fram_control == 60:
+            fram_control = 0
+        else:
+            fram_control = fram_control + 1
 
-    if IsKeyPressed(KEY_R):  # Reset physics system
-        ResetPhysics()
+        #drawing logic
 
-        floor = CreatePhysicsBodyRectangle((SCREEN_WIDTH/2, SCREEN_HEIGHT), 500, 100, 10)
-        floor.enabled = False
 
-        circle = CreatePhysicsBodyCircle((SCREEN_WIDTH/2, SCREEN_HEIGHT/2), 45, 10)
-        circle.enabled = False
 
-    # Physics body creation inputs
-    if IsMouseButtonPressed(MOUSE_BUTTON_LEFT):
-        CreatePhysicsBodyPolygon(GetMousePosition(), GetRandomValue(20, 80), GetRandomValue(3, 8), 10)
-    elif IsMouseButtonPressed(MOUSE_BUTTON_RIGHT):
-        CreatePhysicsBodyCircle(GetMousePosition(), GetRandomValue(10, 45), 10)
+#     UpdatePhysics()  # Update physics system
 
-    # Destroy falling physics bodies
-    bodies_count = GetPhysicsBodiesCount()
-    for i in reversed(range(bodies_count)):
-        body = GetPhysicsBody(i)
+#     if IsKeyPressed(KEY_R):  # Reset physics system
+#         ResetPhysics()
 
-        if body and body.position.y > SCREEN_HEIGHT * 2:
-            DestroyPhysicsBody(body)
-    # ----------------------------------------------------------------------
+#         floor = CreatePhysicsBodyRectangle((SCREEN_WIDTH/2, SCREEN_HEIGHT), 500, 100, 10)
+#         floor.enabled = False
 
-    # Draw
-    # ----------------------------------------------------------------------
-    BeginDrawing()
+#         circle = CreatePhysicsBodyCircle((SCREEN_WIDTH/2, SCREEN_HEIGHT/2), 45, 10)
+#         circle.enabled = False
 
-    ClearBackground(BLACK)
-    DrawFPS(SCREEN_WIDTH - 90, SCREEN_HEIGHT - 30)
+#     # Physics body creation inputs
+#     if IsMouseButtonPressed(MOUSE_BUTTON_LEFT):
+#         CreatePhysicsBodyPolygon(GetMousePosition(), GetRandomValue(20, 80), GetRandomValue(3, 8), 10)
+#     elif IsMouseButtonPressed(MOUSE_BUTTON_RIGHT):
+#         CreatePhysicsBodyCircle(GetMousePosition(), GetRandomValue(10, 45), 10)
 
-    # Draw created physics bodies
-    bodies_count = GetPhysicsBodiesCount()
-    for i in range(bodies_count):
-        body = GetPhysicsBody(i)
+#     # Destroy falling physics bodies
+#     bodies_count = GetPhysicsBodiesCount()
+#     for i in reversed(range(bodies_count)):
+#         body = GetPhysicsBody(i)
 
-        if body:
-            vertex_count = GetPhysicsShapeVerticesCount(i)
-            for j in range(vertex_count):
-                # Get physics bodies shape vertices to draw lines
-                # Note: GetPhysicsShapeVertex() already calculates rotation transformations
-                vertexA = GetPhysicsShapeVertex(body, j)
+#         if body and body.position.y > SCREEN_HEIGHT * 2:
+#             DestroyPhysicsBody(body)
+#     # ----------------------------------------------------------------------
 
-                # Get next vertex or first to close the shape
-                jj = (j + 1) if (j+1) < vertex_count else 0
-                vertexB = GetPhysicsShapeVertex(body, jj)
+#     # Draw
+#     # ----------------------------------------------------------------------
+#     BeginDrawing()
 
-                # Draw a line between two vertex positions
-                DrawLineV(vertexA, vertexB, GREEN)
+#     ClearBackground(BLACK)
+#     DrawFPS(SCREEN_WIDTH - 90, SCREEN_HEIGHT - 30)
 
-    pr.draw_text(b'Left mouse button to create a polygon', 10, 10, 10, WHITE)
-    pr.draw_text(b'Right mouse button to create a circle', 10, 25, 10, WHITE)
-    pr.draw_text("Press 'R' to reset example", 10, 40, 10, WHITE)
+#     # Draw created physics bodies
+#     bodies_count = GetPhysicsBodiesCount()
+#     for i in range(bodies_count):
+#         body = GetPhysicsBody(i)
 
-    pr.end_drawing()
-    # ----------------------------------------------------------------------
+#         if body:
+#             vertex_count = GetPhysicsShapeVerticesCount(i)
+#             for j in range(vertex_count):
+#                 # Get physics bodies shape vertices to draw lines
+#                 # Note: GetPhysicsShapeVertex() already calculates rotation transformations
+#                 vertexA = GetPhysicsShapeVertex(body, j)
 
-ClosePhysics()
-CloseWindow()
+#                 # Get next vertex or first to close the shape
+#                 jj = (j + 1) if (j+1) < vertex_count else 0
+#                 vertexB = GetPhysicsShapeVertex(body, jj)
+
+#                 # Draw a line between two vertex positions
+#                 DrawLineV(vertexA, vertexB, GREEN)
+
+#     pr.draw_text(b'Left mouse button to create a polygon', 10, 10, 10, WHITE)
+#     pr.draw_text(b'Right mouse button to create a circle', 10, 25, 10, WHITE)
+#     pr.draw_text("Press 'R' to reset example", 10, 40, 10, WHITE)
+
+#     pr.end_drawing()
+#     # ----------------------------------------------------------------------
+
+# ClosePhysics()
+# CloseWindow()
+
+pr.unload_texture(image_Background)
+pr.unload_texture(image_Base)
+pr.unload_texture(image_Pip)
+
+pr.unload_texture(bird_Fram_1)
+pr.unload_texture(bird_Fram_2)
+pr.unload_texture(bird_Fram_3)
+
+pr.unload_texture(image_Beging)
+pr.unload_texture(image_Over)
