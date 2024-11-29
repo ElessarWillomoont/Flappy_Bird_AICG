@@ -91,9 +91,14 @@ def draw_the_bird (PositionY, FrameControl):
     elif int(FrameControl/ 20) == 2:
         pr.draw_texture_ex(bird_Fram_3, target_point, 0.0,  bird_size, pr.WHITE)
 
-def draw_the_pip (pip):
+def draw_the_pip (pip :MyPip):
+    global image_Pip, pip_size
     if pip.Direction == PIP_POS_UP:
-        pass
+        target_point = pr.Vector2(int(pip.PositionX - image_Pip.width /2 * pip_size),int(image_Pip.height * pip_size - pip.HeadPositionY))
+        pr.draw_texture_ex(image_Pip, target_point, 180.0, pip_size, pr.WHITE)
+    if pip.Direction == PIP_POS_DOWN:
+        target_point = pr.Vector2(int(pip.PositionX - image_Pip.width /2 * pip_size),int(SCREEN_HEIGHT - image_Pip.height * pip_size + pip.HeadPositionY))
+        pr.draw_texture_ex(image_Pip, target_point, 0, pip_size, pr.WHITE)
 
 def make_new_pip (pips: list):
     distance_closest = SCREEN_WIDTH
@@ -117,6 +122,9 @@ def renew_score_digit (score):
     while len(score_digit) < 4:
         score_digit.insert(0, 0)
 
+def draw_the_UI (texture, point):
+    pass
+
 bird_play = MyBird(int(SCREEN_HEIGHT/ 2))
 
 game_status = WAITING
@@ -133,6 +141,8 @@ fram_control = 0 #to control the bird animation
 pr.set_target_fps(60)
 
 while not pr.window_should_close():
+    if game_status == WAITING:
+        pass
     if game_status == RUNING:
         #Game Logic
         if len(pips) <= 8:
@@ -144,6 +154,7 @@ while not pr.window_should_close():
         draw_the_bird(bird_play.positionY, fram_control)
         for index, pip_i in enumerate(pips):
             pip_i.PositionX = pip_i.PositionX - SPEED_X
+            draw_the_pip (pip_i)
             if pip_i.PositionX == int( SCREEN_WIDTH / 2): #pip overlap with bird
                 hit_the_pip(bird_play, pip_i)
                 score_real = score_real + 1
@@ -161,7 +172,8 @@ while not pr.window_should_close():
         else:
             fram_control = fram_control + 1
 
-        #drawing logic
+        if game_status == FAILED:
+            pass
 
 
 
